@@ -1,0 +1,26 @@
+{
+  "by_category": {
+    "crypto": {"wins": 0, "losses": 0, "total_pnl": 0.0},
+    "politics": {"wins": 0, "losses": 0, "total_pnl": 0.0}
+  },
+  "by_strategy": {
+    "SCOUT_BULLISH": {"wins": 0, "losses": 0},
+    "SCOUT_BEARISH": {"wins": 0, "losses": 0},
+    "ARBITRAGE": {"wins": 0, "losses": 0},
+    "SNIPER": {"wins": 0, "losses": 0}
+  },
+  "by_confidence_band": {
+    "55-64": {"wins": 0, "losses": 0},
+    "65-74": {"wins": 0, "losses": 0},
+    "75-84": {"wins": 0, "losses": 0},
+    "85+": {"wins": 0, "losses": 0}
+  },
+  "by_mode": {
+    "paper": {"wins": 0, "losses": 0, "total_pnl": 0.0, "total_fees": 0.0},
+    "live": {"wins": 0, "losses": 0, "total_pnl": 0.0, "total_fees": 0.0}
+  },
+  "total_bets": 0,
+  "total_wins": 0,
+  "total_losses": 0,
+  "overall_pnl": 0.0
+}

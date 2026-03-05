@@ -1,0 +1,170 @@
+{
+  "polymarket": {
+    "api_key": "",
+    "api_secret": "",
+    "api_passphrase": "",
+    "private_key": "",
+    "wallet_address": "",
+    "chain_id": 137,
+    "host": "https://clob.polymarket.com"
+  },
+  "gemini": {
+    "api_key": "",
+    "model": "gemini-2.5-pro"
+  },
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "llama3.2:latest"
+  },
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "twitter": {
+    "bearer_token": "",
+    "api_key": "",
+    "api_secret": "",
+    "access_token": "",
+    "access_token_secret": "",
+    "enabled": true,
+    "fallback_to_reddit": true
+  },
+  "whale_alert": {
+    "api_key": "",
+    "base_url": "https://api.whale-alert.io/v1",
+    "min_transaction_usdc": 500000,
+    "enabled": true
+  },
+  "binance": {
+    "base_url": "https://api.binance.com/api/v3",
+    "enabled": true
+  },
+  "coincap": {
+    "base_url": "https://api.coincap.io/v2",
+    "enabled": true
+  },
+  "betting": {
+    "paper_trading": true,
+    "min_confidence": 55,
+    "max_bet_usdc": 5.0,
+    "min_bet_usdc": 1.0,
+    "max_open_bets": 10,
+    "survival_threshold_usdc": 20.0,
+    "max_daily_loss_pct": 10.0,
+    "categories": ["crypto", "politics"],
+    "scan_interval_minutes": 15,
+    "arbitrage_check": true,
+    "exit_before_resolution": true,
+    "exit_target_multiplier": 2.5
+  },
+  "herald": {
+    "enabled": true,
+    "check_interval_seconds": 60,
+    "velocity_window_minutes": 10,
+    "velocity_threshold_articles": 3,
+    "geopolitical_keywords": [
+      "military",
+      "attack",
+      "strike",
+      "escalation",
+      "invasion",
+      "sanctions",
+      "nuclear",
+      "missile",
+      "war",
+      "conflict",
+      "election",
+      "coup",
+      "assassination",
+      "protest",
+      "crisis"
+    ],
+    "crypto_keywords": [
+      "ETF",
+      "SEC",
+      "regulation",
+      "hack",
+      "exploit",
+      "crash",
+      "halving",
+      "fork",
+      "ban",
+      "adoption",
+      "institutional"
+    ],
+    "feeds": {
+      "geopolitical": [
+        "https://feeds.reuters.com/reuters/worldNews",
+        "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "https://www.aljazeera.com/xml/rss/all.xml",
+        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
+      ],
+      "crypto": [
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+        "https://decrypt.co/feed",
+        "https://bitcoinmagazine.com/feed",
+        "https://www.theblock.co/rss.xml"
+      ],
+      "politics": [
+        "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
+        "https://feeds.reuters.com/reuters/politicsNews",
+        "https://feeds.bbci.co.uk/news/politics/rss.xml"
+      ]
+    },
+    "twitter_accounts": [
+      "whale_alert",
+      "lookonchain",
+      "coindesk",
+      "cointelegraph",
+      "binance",
+      "VitalikButerin"
+    ]
+  },
+  "reddit": {
+    "feeds": {
+      "crypto": [
+        "https://www.reddit.com/r/CryptoCurrency/.rss",
+        "https://www.reddit.com/r/Bitcoin/.rss",
+        "https://www.reddit.com/r/ethereum/.rss",
+        "https://www.reddit.com/r/cryptocurrency/.rss",
+        "https://www.reddit.com/r/bitcoin/.rss",
+        "https://www.reddit.com/r/CryptoMarkets/.rss"
+      ],
+      "politics": [
+        "https://www.reddit.com/r/politics/.rss",
+        "https://www.reddit.com/r/news/.rss",
+        "https://www.reddit.com/r/worldnews/.rss"
+      ]
+    },
+    "velocity_window_hours": 24,
+    "max_posts_per_feed": 25
+  },
+  "account": {
+    "starting_balance_usdc": 10.0,
+    "current_balance_usdc": 10.0
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/oracle.log",
+    "max_bytes": 10485760,
+    "backup_count": 5
+  },
+  "dev_flags": {
+    "use_gemini": true,
+    "use_ollama": true,
+    "use_twitter": true,
+    "use_whale_alert": true,
+    "use_fear_greed_api": true,
+    "use_binance": true,
+    "use_coincap": true,
+    "use_reddit": true,
+    "use_news_rss": true,
+    "use_herald": true,
+    "use_telegram": true,
+    "use_polymarket_api": true,
+    "mock_market_data": false,
+    "mock_scout_result": false,
+    "mock_apex_result": false
+  }
+}
