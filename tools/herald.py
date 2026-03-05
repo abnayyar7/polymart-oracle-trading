@@ -17,6 +17,7 @@ Twitter accounts monitored (via Twitter API when use_twitter=true in dev_flags):
 
 import json
 import logging
+import re
 import threading
 import time
 from collections import defaultdict
@@ -42,6 +43,7 @@ class HeraldAgent:
         self.check_interval = self.cfg.get("check_interval_seconds", 60)
         self.velocity_window = self.cfg.get("velocity_window_minutes", 10)
         self.velocity_threshold = self.cfg.get("velocity_threshold_articles", 3)
+        self.signal_cooldown_minutes = self.cfg.get("signal_cooldown_minutes", self.velocity_window)
         self.geo_keywords = [kw.lower() for kw in self.cfg.get("geopolitical_keywords", [])]
         self.crypto_keywords = [kw.lower() for kw in self.cfg.get("crypto_keywords", [])]
         self.feeds = self.cfg.get("feeds", {})
@@ -50,6 +52,11 @@ class HeraldAgent:
 
         # {keyword: [(timestamp, title, source), ...]}
         self._article_log: dict[str, list[tuple]] = defaultdict(list)
+        # Deduplicate feed items across polling cycles.
+        # key -> seen_at datetime
+        self._seen_entries: dict[str, datetime] = {}
+        # Cooldown tracking to avoid repeated notifications for same keyword.
+        self._last_signal_fired_at: dict[str, datetime] = {}
         self._lock = threading.Lock()
 
         # Active signals: {keyword: {"boost": int, "articles": [...], "fired_at": datetime}}
@@ -123,7 +130,8 @@ class HeraldAgent:
             feed = feedparser.parse(url, request_headers={"User-Agent": "ORACLE-HERALD/3.0"})
             source = feed.feed.get("title", url)
             for entry in feed.entries[:20]:
-                title = (entry.get("title") or "").lower()
+                raw_title = entry.get("title", "")
+                title = raw_title.lower()
                 summary = (entry.get("summary") or "").lower()
                 text = title + " " + summary
 
@@ -131,12 +139,33 @@ class HeraldAgent:
                 if published is None:
                     continue
 
+                # Stable entry identity to prevent counting same RSS item every poll.
+                entry_key = self._entry_key(entry, source)
+                with self._lock:
+                    if entry_key in self._seen_entries:
+                        continue
+                    self._seen_entries[entry_key] = datetime.now(tz=timezone.utc)
+
                 for kw in keywords:
-                    if kw in text:
+                    if self._keyword_in_text(kw, text):
                         with self._lock:
-                            self._article_log[kw].append((published, entry.get("title", ""), source))
+                            self._article_log[kw].append((published, raw_title, source))
         except Exception as exc:
             logger.debug("HERALD feed fetch failed (%s): %s", url, exc)
+
+    @staticmethod
+    def _entry_key(entry, source: str) -> str:
+        entry_id = entry.get("id") or entry.get("link") or entry.get("title") or ""
+        return f"{source}|{entry_id}".strip()
+
+    @staticmethod
+    def _keyword_in_text(keyword: str, text: str) -> bool:
+        """Whole-word/phrase match to avoid false positives like 'ban' matching 'bank'."""
+        if not keyword:
+            return False
+        # Use word boundaries around the full escaped keyword.
+        pattern = rf"\b{re.escape(keyword)}\b"
+        return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
     def _parse_published(self, entry) -> datetime | None:
         try:
@@ -150,6 +179,7 @@ class HeraldAgent:
 
     def _expire_old_articles(self):
         cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=self.velocity_window)
+        seen_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=max(self.velocity_window * 6, 60))
         with self._lock:
             for kw in list(self._article_log.keys()):
                 self._article_log[kw] = [
@@ -157,6 +187,9 @@ class HeraldAgent:
                     for ts, title, src in self._article_log[kw]
                     if ts >= cutoff
                 ]
+            self._seen_entries = {
+                key: ts for key, ts in self._seen_entries.items() if ts >= seen_cutoff
+            }
 
     def _detect_velocity_spikes(self):
         now = datetime.now(tz=timezone.utc)
@@ -166,25 +199,41 @@ class HeraldAgent:
                     sources = {src for _, _, src in articles}
                     boost = self._calc_boost(len(articles), len(sources))
                     prev = self.active_signals.get(kw, {})
-                    if not prev or prev["boost"] != boost:
+                    last_fired = self._last_signal_fired_at.get(kw)
+                    cooldown_elapsed = (
+                        last_fired is None
+                        or (now - last_fired) >= timedelta(minutes=self.signal_cooldown_minutes)
+                    )
+                    should_fire = (not prev or prev["boost"] != boost) and cooldown_elapsed
+                    if not prev or prev.get("boost") != boost:
+                        unique_headlines = []
+                        seen_titles = set()
+                        for _, title, _ in articles:
+                            if title and title not in seen_titles:
+                                seen_titles.add(title)
+                                unique_headlines.append(title)
+                            if len(unique_headlines) >= 5:
+                                break
                         signal = {
                             "keyword": kw,
                             "article_count": len(articles),
                             "source_count": len(sources),
                             "boost": boost,
                             "fired_at": now.isoformat(),
-                            "headlines": [title for _, title, _ in articles[:5]],
+                            "headlines": unique_headlines,
                         }
                         self.active_signals[kw] = signal
-                        logger.info(
-                            "HERALD BREAKING: '%s' — %d articles from %d sources, boost +%d%%",
-                            kw, len(articles), len(sources), boost,
-                        )
-                        if self.on_breaking_signal:
-                            try:
-                                self.on_breaking_signal(signal)
-                            except Exception as exc:
-                                logger.error("HERALD callback error: %s", exc)
+                        if should_fire:
+                            self._last_signal_fired_at[kw] = now
+                            logger.info(
+                                "HERALD BREAKING: '%s' — %d articles from %d sources, boost +%d%%",
+                                kw, len(articles), len(sources), boost,
+                            )
+                            if self.on_breaking_signal:
+                                try:
+                                    self.on_breaking_signal(signal)
+                                except Exception as exc:
+                                    logger.error("HERALD callback error: %s", exc)
                 else:
                     # Remove expired signal
                     self.active_signals.pop(kw, None)

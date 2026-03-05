@@ -25,6 +25,7 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
 
 _SESSION = requests.Session()
 _BASE_URL = "https://api.telegram.org/bot{token}/sendMessage"
+_UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
 
 def _escape_html(text: str) -> str:
@@ -293,6 +294,28 @@ def notify_daily_summary(summary: dict, config: dict):
     send_message("\n".join(lines), config)
 
 
+def notify_gemini_cost(snapshot: dict, config: dict):
+    """Send Gemini usage/cost snapshot to Telegram after a billed call."""
+    if not snapshot:
+        return
+
+    call = snapshot.get("last_call", {})
+    daily = snapshot.get("daily", {})
+    monthly = snapshot.get("monthly", {})
+    totals = snapshot.get("totals", {})
+
+    text = (
+        f"<b>GEMINI COST UPDATE</b>\n"
+        f"Model: {call.get('model', 'gemini')} | Tier: {call.get('pricing', {}).get('tier', 'N/A')}\n"
+        f"Call tokens — in: {call.get('prompt_tokens', 0):,}, out: {call.get('output_tokens', 0):,}, cache: {call.get('cache_tokens', 0):,}\n"
+        f"Call cost: ${call.get('usd_cost', 0.0):.6f}\n"
+        f"Today ({snapshot.get('day_key', '')}): ${daily.get('usd_cost', 0.0):.6f} ({daily.get('calls', 0)} calls)\n"
+        f"Month ({snapshot.get('month_key', '')}): ${monthly.get('usd_cost', 0.0):.6f} ({monthly.get('calls', 0)} calls)\n"
+        f"All-time: ${totals.get('usd_cost', 0.0):.6f} ({totals.get('calls', 0)} calls)"
+    )
+    send_message(text, config)
+
+
 # ---------------------------------------------------------------------------
 # Generic
 # ---------------------------------------------------------------------------
@@ -310,6 +333,91 @@ def notify_info(message: str, config: dict):
 def notify_skip(market: dict, reason: str, config: dict):
     logger.debug("SKIP: %s — %s", market.get("question", "")[:50], reason)
     # Not sent to Telegram (too noisy)
+
+
+# ---------------------------------------------------------------------------
+# Incoming command polling
+# ---------------------------------------------------------------------------
+
+def poll_commands(config: dict, last_update_id: int | None = None, timeout: int = 0) -> tuple[list[dict], int | None]:
+    """
+    Poll Telegram updates and return parsed slash commands.
+    Returns (commands, newest_update_id).
+    """
+    tg = config.get("telegram", {})
+    token = tg.get("bot_token", "")
+    chat_id = str(tg.get("chat_id", "")).strip()
+
+    if not token or not chat_id:
+        return [], last_update_id
+
+    params = {
+        "timeout": timeout,
+        "allowed_updates": ["message"],
+    }
+    if last_update_id is not None:
+        params["offset"] = last_update_id + 1
+
+    try:
+        r = _SESSION.get(_UPDATES_URL.format(token=token), params=params, timeout=10)
+        r.raise_for_status()
+        payload = r.json() or {}
+        updates = payload.get("result", []) if payload.get("ok") else []
+
+        commands: list[dict] = []
+        newest = last_update_id
+
+        for upd in updates:
+            upd_id = upd.get("update_id")
+            if isinstance(upd_id, int):
+                newest = upd_id if newest is None else max(newest, upd_id)
+
+            msg = upd.get("message") or {}
+            text = (msg.get("text") or "").strip()
+            incoming_chat_id = str((msg.get("chat") or {}).get("id", "")).strip()
+
+            if incoming_chat_id != chat_id:
+                continue
+            if not text.startswith("/"):
+                continue
+
+            command, args = _parse_command(text)
+            commands.append(
+                {
+                    "update_id": upd_id,
+                    "chat_id": incoming_chat_id,
+                    "user": (msg.get("from") or {}).get("username", "unknown"),
+                    "text": text,
+                    "command": command,
+                    "args": args,
+                }
+            )
+
+        return commands, newest
+    except Exception as exc:
+        logger.warning("Telegram command poll failed: %s", _redact_secrets(str(exc)))
+        return [], last_update_id
+
+
+def _parse_command(text: str) -> tuple[str, str]:
+    # Supports command forms like /status and /status@BotName
+    first, *rest = text.split(maxsplit=1)
+    base = first.split("@", 1)[0].lower()
+    args = rest[0] if rest else ""
+    return base, args
+
+
+def command_help_text() -> str:
+    return (
+        "<b>ORACLE Commands</b>\n"
+        "/status — runtime state\n"
+        "/balance — paper/live balances\n"
+        "/openbets — list open bets\n"
+        "/costs — Gemini costs\n"
+        "/pause — pause scheduled scans\n"
+        "/resume — resume scheduled scans\n"
+        "/help — show this help"
+    )
 
 
 # ---------------------------------------------------------------------------

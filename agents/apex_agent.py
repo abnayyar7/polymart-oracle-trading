@@ -12,6 +12,9 @@ import json
 import logging
 from pathlib import Path
 
+from tools.gemini_cost import extract_usage_metadata, update_gemini_cost_tracker
+from tools.telegram import notify_gemini_cost
+
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
@@ -201,6 +204,23 @@ class ApexAgent:
         try:
             client = self._get_client()
             response = client.generate_content(prompt)
+
+            try:
+                usage = extract_usage_metadata(response)
+                if usage:
+                    snapshot = update_gemini_cost_tracker(self.model, usage)
+                    notify_gemini_cost(snapshot, self.cfg)
+                    logger.info(
+                        "Gemini cost tracked: call=$%.6f | day=$%.6f | total=$%.6f",
+                        snapshot["last_call"].get("usd_cost", 0.0),
+                        snapshot["daily"].get("usd_cost", 0.0),
+                        snapshot["totals"].get("usd_cost", 0.0),
+                    )
+                else:
+                    logger.warning("Gemini response missing usage metadata; cost not tracked for this call.")
+            except Exception as track_exc:
+                logger.warning("Gemini cost tracking failed: %s", track_exc)
+
             content = response.text.strip()
             result = self._parse_json_response(content)
             if result:

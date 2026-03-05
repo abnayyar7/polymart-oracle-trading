@@ -44,7 +44,9 @@ from tools.polymarket_tools import (
 )
 from tools.execution_router import route, check_open_positions, get_current_mode
 from tools.sentiment import collect_signals
+from tools.gemini_cost import get_gemini_cost_snapshot
 from tools.telegram import (
+    command_help_text,
     notify_arbitrage,
     notify_bet_placed,
     notify_daily_summary,
@@ -55,6 +57,8 @@ from tools.telegram import (
     notify_shutdown,
     notify_sniper,
     notify_startup,
+    poll_commands,
+    send_message,
 )
 
 ROOT = Path(__file__).parent
@@ -69,12 +73,18 @@ def setup_logging(config: dict):
     log_file = ROOT / log_cfg.get("file", "logs/oracle.log")
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    root_logger = logging.getLogger()
+
+    # Idempotent setup: avoid duplicate handlers when setup_logging is called twice.
+    if getattr(root_logger, "_oracle_logging_configured", False):
+        root_logger.setLevel(level)
+        return
+
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
     # Console handler
@@ -91,6 +101,7 @@ def setup_logging(config: dict):
     )
     fh.setFormatter(formatter)
     root_logger.addHandler(fh)
+    root_logger._oracle_logging_configured = True
 
 
 logger = logging.getLogger("oracle.main")
@@ -114,6 +125,8 @@ class Oracle:
 
         # Flag set by HERALD callback to trigger immediate scan
         self._herald_triggered = False
+        self._paused = False
+        self._telegram_update_offset: int | None = None
 
         # HERALD signal/bet counters reset daily
         self._herald_signals_today = 0
@@ -138,6 +151,10 @@ class Oracle:
 
     def run_scan(self):
         """Execute one full scan cycle."""
+        if self._paused:
+            logger.info("Scan skipped: ORACLE paused via Telegram command.")
+            return
+
         logger.info("=== ORACLE SCAN START ===")
         self._herald_triggered = False
 
@@ -369,6 +386,93 @@ class Oracle:
         self._herald_signals_today = 0
         self._herald_bets_today = 0
 
+    def _poll_telegram_commands(self):
+        commands, newest = poll_commands(self.config, self._telegram_update_offset, timeout=0)
+        if newest is not None:
+            self._telegram_update_offset = newest
+        for cmd in commands:
+            self._handle_telegram_command(cmd)
+
+    def _handle_telegram_command(self, cmd: dict):
+        command = cmd.get("command", "")
+        logger.info("Telegram command received: %s", command)
+
+        if command in ("/help", "/start"):
+            send_message(command_help_text(), self.config)
+            return
+
+        if command == "/status":
+            mode = self._active_mode.upper()
+            account = get_account_state(mode=self._active_mode)
+            text = (
+                f"<b>ORACLE STATUS</b>\n"
+                f"Mode: {mode}\n"
+                f"Paused: {'YES' if self._paused else 'NO'}\n"
+                f"Balance: ${account.get('current_balance', 0.0):.4f}\n"
+                f"Open bets: {account.get('open_bet_count', 0)}\n"
+                f"HERALD signals today: {self._herald_signals_today}"
+            )
+            send_message(text, self.config)
+            return
+
+        if command == "/balance":
+            paper = get_account_state(mode="paper")
+            live = get_account_state(mode="live")
+            text = (
+                f"<b>ORACLE BALANCES</b>\n"
+                f"Paper: ${paper.get('current_balance', 0.0):.4f} (start ${paper.get('starting_balance', 0.0):.4f})\n"
+                f"Live: ${live.get('current_balance', 0.0):.4f} (start ${live.get('starting_balance', 0.0):.4f})"
+            )
+            send_message(text, self.config)
+            return
+
+        if command == "/openbets":
+            mode = self._active_mode
+            open_bets = [b for b in get_open_bets() if b.get("mode") == mode]
+            if not open_bets:
+                send_message(f"<b>OPEN BETS [{mode.upper()}]</b>\nNone.", self.config)
+                return
+
+            lines = [f"<b>OPEN BETS [{mode.upper()}]</b> ({len(open_bets)})"]
+            for b in open_bets[:8]:
+                lines.append(
+                    f"- {b.get('side')} | ${b.get('bet_usdc', 0):.2f} @ {b.get('entry_price', 0):.3f} | "
+                    f"{b.get('market_question', '')[:55]}"
+                )
+            if len(open_bets) > 8:
+                lines.append(f"... and {len(open_bets) - 8} more")
+            send_message("\n".join(lines), self.config)
+            return
+
+        if command == "/costs":
+            snap = get_gemini_cost_snapshot()
+            last = snap.get("last_call") or {}
+            text = (
+                f"<b>GEMINI COSTS</b>\n"
+                f"Today ({snap.get('day_key', '')}): ${snap.get('daily', {}).get('usd_cost', 0.0):.6f}\n"
+                f"Month ({snap.get('month_key', '')}): ${snap.get('monthly', {}).get('usd_cost', 0.0):.6f}\n"
+                f"All-time: ${snap.get('totals', {}).get('usd_cost', 0.0):.6f}"
+            )
+            if last:
+                text += (
+                    f"\nLast call: ${last.get('usd_cost', 0.0):.6f} "
+                    f"(in {last.get('prompt_tokens', 0):,}, out {last.get('output_tokens', 0):,})"
+                )
+            send_message(text, self.config)
+            return
+
+        if command == "/pause":
+            self._paused = True
+            send_message("<b>ORACLE</b>\nScheduled scans paused. Use /resume to continue.", self.config)
+            return
+
+        if command == "/resume":
+            self._paused = False
+            send_message("<b>ORACLE</b>\nScheduled scans resumed.", self.config)
+            return
+
+        send_message("<b>Unknown command.</b>\nUse /help", self.config)
+
     def _log_dev_mode_summary(self):
         """Print a clear summary of which dev_flags are active/disabled."""
         dev = self.config.get("dev_flags", {})
@@ -413,6 +517,7 @@ class Oracle:
         logger.info("ORACLE running. Scan interval: %d minutes.", interval)
         try:
             while True:
+                self._poll_telegram_commands()
                 schedule.run_pending()
 
                 # HERALD can trigger an immediate scan
