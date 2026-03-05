@@ -16,8 +16,7 @@ Required keys (RuntimeError if missing or empty):
   GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 Optional keys (warning logged, but startup continues — paper trading works without them):
-  TWITTER_BEARER_TOKEN, TWITTER_API_KEY, TWITTER_API_SECRET,
-  TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET,
+  TELEGRAM_API_ID, TELEGRAM_API_HASH,
   WHALE_ALERT_API_KEY,
   POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE,
   POLYMARKET_PRIVATE_KEY, POLYMARKET_WALLET_ADDRESS
@@ -44,11 +43,8 @@ _REQUIRED_KEYS: list[str] = [
 ]
 
 _OPTIONAL_KEYS: list[str] = [
-    "TWITTER_BEARER_TOKEN",
-    "TWITTER_API_KEY",
-    "TWITTER_API_SECRET",
-    "TWITTER_ACCESS_TOKEN",
-    "TWITTER_ACCESS_TOKEN_SECRET",
+    "TELEGRAM_API_ID",
+    "TELEGRAM_API_HASH",
     "WHALE_ALERT_API_KEY",
     "POLYMARKET_API_KEY",
     "POLYMARKET_API_SECRET",
@@ -119,11 +115,8 @@ def _inject_secrets(config: dict, secrets: dict[str, str]):
         "GEMINI_API_KEY":                ("gemini", "api_key"),
         "TELEGRAM_BOT_TOKEN":            ("telegram", "bot_token"),
         "TELEGRAM_CHAT_ID":              ("telegram", "chat_id"),
-        "TWITTER_BEARER_TOKEN":          ("twitter", "bearer_token"),
-        "TWITTER_API_KEY":               ("twitter", "api_key"),
-        "TWITTER_API_SECRET":            ("twitter", "api_secret"),
-        "TWITTER_ACCESS_TOKEN":          ("twitter", "access_token"),
-        "TWITTER_ACCESS_TOKEN_SECRET":   ("twitter", "access_token_secret"),
+        "TELEGRAM_API_ID":               ("telegram", "api_id"),
+        "TELEGRAM_API_HASH":             ("telegram", "api_hash"),
         "WHALE_ALERT_API_KEY":           ("whale_alert", "api_key"),
         "POLYMARKET_API_KEY":            ("polymarket", "api_key"),
         "POLYMARKET_API_SECRET":         ("polymarket", "api_secret"),

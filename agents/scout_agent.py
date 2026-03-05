@@ -20,15 +20,16 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
 SCOUT_SYSTEM_PROMPT = """You are SCOUT, a market sentiment analyst for Polymarket prediction markets.
 
 You receive raw market signals (Binance price/RSI, Fear & Greed, CryptoPanic news
-with crowd votes, Twitter/X tweet velocity, Reddit post velocity, news headlines,
-HERALD breaking news signal if active, and Polymarket YES/NO prices).
+with crowd votes, StockTwits sentiment, Nitter breaking news, Telegram announcements, 
+Reddit post velocity, news headlines, HERALD breaking news signal if active, and 
+Polymarket YES/NO prices).
 
 Your job: analyze ALL signals holistically and determine whether the market's
 current YES price is likely UNDERPRICED or OVERPRICED.
 
 Analyze in this order:
 1. EXTREMES FIRST — RSI > 70 or < 30, Fear & Greed at extremes = contrarian signal
-2. MOMENTUM SECOND — Twitter velocity, HERALD breaking signal = directional signal
+2. MOMENTUM SECOND — StockTwits panic signal, Nitter breaking news, HERALD signal = directional signal
 3. CROWD THIRD — Reddit velocity, CryptoPanic vote ratio = retail mood
 4. MARKET STRUCTURE FOURTH — Polymarket YES/NO prices vs signals = consensus check
 
@@ -85,17 +86,64 @@ Article count: {signals.get('cryptopanic_article_count', 0)}
 Recent titles: {json.dumps(signals.get('cryptopanic_recent_titles', []), ensure_ascii=False)}
 
 === Social Velocity ===
-Twitter/X tweet count (1h): {signals.get('twitter_tweet_count_1h', 0)} (source: {signals.get('twitter_source', 'none')})
+StockTwits sentiment: {signals.get('stocktwits_bearish_pct', 50):.1f}% bearish, {signals.get('stocktwits_bullish_pct', 50):.1f}% bullish (signal: {signals.get('stocktwits_signal', 'neutral')})
+Market velocity (Reddit): {signals.get('market_velocity_count', 0)} posts (source: {signals.get('market_velocity_source', 'none')})
 Reddit post count (24h): {signals.get('reddit_post_count_24h', 0)}
 
 === HERALD Breaking News ===
 Active: {signals.get('herald_active', False)}
 Confidence boost: +{signals.get('herald_boost', 0)}%
 
-=== Recent News Headlines ===
-{chr(10).join(f'- {h}' for h in signals.get('rss_headlines', [])[:8])}
+=== Nitter / Social Breaking News ===
+{chr(10).join(f'- {h}' for h in signals.get('nitter_headlines', [])[:6]) or '(none)'}
+
+=== Recent RSS Headlines ===
+{chr(10).join(f'- {h}' for h in signals.get('rss_headlines', [])[:8]) or '(none)'}
 
 Now analyze all signals holistically and output your JSON decision."""
+
+
+def has_signals_for_market(market: dict, signals: dict) -> bool:
+    """Quick check if we have any real signal data for this market."""
+    question = str(market.get("question", "")).lower()
+
+    crypto_keywords = [
+        "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
+        "crypto", "blockchain", "defi", "nft", "altcoin",
+        "binance", "coinbase", "polygon", "matic",
+    ]
+    if any(kw in question for kw in crypto_keywords):
+        return True
+
+    question_words = [w for w in question.split() if len(w) > 4]
+    if not question_words:
+        return False
+
+    news_blocks: list[str] = []
+    for article in signals.get("news_articles", []) or []:
+        news_blocks.append(f"{article.get('title', '')} {article.get('description', '')}")
+    # Backward-compat for existing signal structure
+    news_blocks.extend(signals.get("rss_headlines", []) or [])
+    news_blocks.extend(signals.get("nitter_headlines", []) or [])
+    news_text = " ".join(news_blocks).lower()
+
+    matches = sum(1 for word in question_words if word in news_text)
+    if matches >= 2:
+        return True
+
+    reddit_posts = signals.get("reddit_posts", []) or []
+    reddit_text = " ".join(p.get("title", "") for p in reddit_posts).lower()
+    if not reddit_text:
+        reddit_text = " ".join(signals.get("reddit_titles", []) or []).lower()
+    reddit_matches = sum(1 for word in question_words if word in reddit_text)
+    if reddit_matches >= 2:
+        return True
+
+    herald_keyword = str(signals.get("herald_keyword", "") or "").lower()
+    if herald_keyword and herald_keyword in question:
+        return True
+
+    return False
 
 
 _MOCK_SCOUT_RESULT = {
@@ -107,6 +155,18 @@ _MOCK_SCOUT_RESULT = {
     "reasoning_chain": "[MOCK] Dev mode active — no Ollama call made.",
 }
 
+# Sentinel returned when no real signal data exists for a market.
+# Treated as a skip by should_escalate() (confidence=0 < 55).
+_NO_DATA_RESULT = {
+    "sentiment": "NEUTRAL",
+    "narrative": "No signal data available for this market.",
+    "confidence": 50,
+    "data_quality": "NO_DATA",
+    "key_signals": [],
+    "conflicting_signals": [],
+    "reasoning_chain": "Skipped: insufficient signal data before Ollama call.",
+}
+
 
 class ScoutAgent:
     def __init__(self, config: dict):
@@ -116,12 +176,36 @@ class ScoutAgent:
         self.min_confidence = config.get("betting", {}).get("min_confidence", 55)
         self._session = requests.Session()
 
+    @staticmethod
+    def _has_minimum_signals(signals: dict) -> bool:
+        """
+        Return True if at least one real signal source has data.
+        Prevents wasting Ollama compute on markets with zero information.
+        A market passes if it has ANY of:
+          - BTC price data (non-zero)
+          - RSS headlines (any)
+          - Nitter headlines (any)
+          - Reddit velocity (> 0 posts)
+          - CryptoPanic articles (> 0)
+          - Market velocity (> 0 posts)
+        """
+        return any([
+            signals.get("btc_price") is not None and signals.get("btc_price", 0) != 0,
+            bool(signals.get("rss_headlines")),
+            bool(signals.get("nitter_headlines")),
+            signals.get("reddit_post_count_24h", 0) > 0,
+            signals.get("cryptopanic_article_count", 0) > 0,
+            signals.get("market_velocity_count", 0) > 0,
+        ])
+
     def analyze(self, signals: dict) -> dict | None:
         """
         Run SCOUT analysis on collected signals.
         Returns parsed JSON dict, or None if Ollama is unreachable.
+        Returns a NO_DATA sentinel dict if signals are insufficient.
         """
         dev = self.config.get("dev_flags", {})
+        market_q = signals.get("market_question", "")[:60]
 
         if dev.get("mock_scout_result", False):
             logger.info("[DEV] mock_scout_result=true — returning hardcoded SCOUT result (BULLISH, conf=68)")
@@ -140,6 +224,14 @@ class ScoutAgent:
                 "conflicting_signals": [],
                 "reasoning_chain": "[DEV] use_ollama=false",
             }
+
+        # Pre-flight: skip expensive Ollama call if no market-relevant signals exist.
+        market = {"question": signals.get("market_question", "")}
+        if not has_signals_for_market(market, signals):
+            logger.info("SCOUT PRE-CHECK: No signals for %s, skipping Ollama", market_q)
+            result = dict(_NO_DATA_RESULT)
+            result["market_id"] = signals.get("market_id", "")
+            return result
 
         prompt = _build_signals_prompt(signals)
         try:
@@ -165,9 +257,20 @@ class ScoutAgent:
             result = self._parse_json_response(content)
             if result:
                 result["market_id"] = signals.get("market_id", result.get("market_id", ""))
+
+                # Detect "I have no idea" response: NEUTRAL with exactly 50% confidence
+                if result.get("sentiment") == "NEUTRAL" and result.get("confidence") == 50:
+                    logger.info(
+                        "SCOUT: No signal data available for %s (returned 50%% NEUTRAL — treating as NO_DATA)",
+                        market_q,
+                    )
+                    result["sentiment"] = "NO_DATA"
+                    result["confidence"] = 0
+                    return result
+
                 logger.info(
                     "SCOUT: %s | %s | confidence=%d%%",
-                    signals.get("market_question", "")[:50],
+                    market_q,
                     result.get("sentiment"),
                     result.get("confidence", 0),
                 )
@@ -180,12 +283,12 @@ class ScoutAgent:
             return None
 
     def should_escalate(self, scout_result: dict) -> bool:
-        """True if confidence >= min_confidence AND not NEUTRAL."""
+        """True if confidence >= min_confidence AND sentiment is BULLISH or BEARISH."""
         if not scout_result:
             return False
         confidence = scout_result.get("confidence", 0)
         sentiment = scout_result.get("sentiment", "NEUTRAL")
-        return confidence >= self.min_confidence and sentiment != "NEUTRAL"
+        return confidence >= self.min_confidence and sentiment in ("BULLISH", "BEARISH")
 
     @staticmethod
     def _parse_json_response(content: str) -> dict | None:

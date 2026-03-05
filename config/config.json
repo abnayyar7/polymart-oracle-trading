@@ -14,20 +14,32 @@
   },
   "ollama": {
     "base_url": "http://localhost:11434",
-    "model": "llama3.2:latest"
+    "model": "qwen2.5:14b"
   },
   "telegram": {
     "bot_token": "",
-    "chat_id": ""
+    "chat_id": "",
+    "api_id": "",
+    "api_hash": ""
   },
-  "twitter": {
-    "bearer_token": "",
-    "api_key": "",
-    "api_secret": "",
-    "access_token": "",
-    "access_token_secret": "",
+  "stocktwits": {
+    "base_url": "https://api.stocktwits.com/api/2",
     "enabled": true,
-    "fallback_to_reddit": true
+    "symbols": ["BTC.X", "ETH.X", "SOL.X", "XRP.X"]
+  },
+  "cryptopanic": {
+    "auth_token": "",
+    "base_url": "https://cryptopanic.com/api/v1",
+    "enabled": true
+  },
+  "nitter": {
+    "enabled": true,
+    "base_instances": [
+      "https://nitter.poast.org",
+      "https://nitter.privacydev.net",
+      "https://nitter.tiekoetter.com"
+    ],
+    "max_headlines_per_account": 3
   },
   "whale_alert": {
     "api_key": "",
@@ -46,6 +58,8 @@
   "betting": {
     "paper_trading": true,
     "min_confidence": 55,
+    "scout_parallel_workers": 3,
+    "cycle_timeout_seconds": 840,
     "max_bet_usdc": 5.0,
     "min_bet_usdc": 1.0,
     "max_open_bets": 10,
@@ -62,6 +76,7 @@
     "check_interval_seconds": 60,
     "velocity_window_minutes": 10,
     "velocity_threshold_articles": 3,
+    "signal_cooldown_minutes": 10,
     "geopolitical_keywords": [
       "military",
       "attack",
@@ -77,7 +92,12 @@
       "coup",
       "assassination",
       "protest",
-      "crisis"
+      "crisis",
+      "ceasefire",
+      "treaty",
+      "summit",
+      "veto",
+      "impeachment"
     ],
     "crypto_keywords": [
       "ETF",
@@ -90,36 +110,150 @@
       "fork",
       "ban",
       "adoption",
-      "institutional"
+      "institutional",
+      "stablecoin",
+      "defi",
+      "liquidation",
+      "whale"
+    ],
+    "sports_keywords": [
+      "championship",
+      "tournament",
+      "trade",
+      "injury",
+      "transfer",
+      "playoffs",
+      "world cup",
+      "super bowl",
+      "olympic",
+      "suspended",
+      "retirement",
+      "doping",
+      "final",
+      "knockout"
+    ],
+    "entertainment_keywords": [
+      "oscar",
+      "emmy",
+      "grammy",
+      "box office",
+      "premiere",
+      "cancelled",
+      "renewed",
+      "celebrity",
+      "lawsuit",
+      "controversy",
+      "scandal",
+      "record",
+      "streaming"
+    ],
+    "science_keywords": [
+      "discovery",
+      "breakthrough",
+      "FDA",
+      "approval",
+      "launch",
+      "mission",
+      "climate",
+      "vaccine",
+      "pandemic",
+      "quantum",
+      "AI",
+      "recall",
+      "outbreak",
+      "earthquake",
+      "hurricane"
+    ],
+    "nitter_accounts": [
+      "whale_alert",
+      "lookonchain",
+      "VitalikButerin",
+      "binance",
+      "cointelegraph",
+      "coindesk"
+    ],
+    "telegram_channels": [
+      "whale_alert_io",
+      "cointelegraph",
+      "binance_announcements",
+      "coindesk"
     ],
     "feeds": {
       "geopolitical": [
         "https://feeds.reuters.com/reuters/worldNews",
+        "https://feeds.apnews.com/rss/topnews",
         "https://feeds.bbci.co.uk/news/world/rss.xml",
         "https://www.aljazeera.com/xml/rss/all.xml",
-        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
+        "https://www.theguardian.com/world/rss",
+        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+        "https://news.un.org/feed/subscribe/en/news/all/rss.xml"
+      ],
+      "politics": [
+        "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
+        "https://feeds.reuters.com/reuters/politicsNews",
+        "https://feeds.bbci.co.uk/news/politics/rss.xml",
+        "https://rss.politico.com/politics-news.xml",
+        "https://thehill.com/feed/",
+        "https://www.whitehouse.gov/feed/"
       ],
       "crypto": [
         "https://www.coindesk.com/arc/outboundfeeds/rss/",
         "https://cointelegraph.com/rss",
         "https://decrypt.co/feed",
         "https://bitcoinmagazine.com/feed",
-        "https://www.theblock.co/rss.xml"
+        "https://www.theblock.co/rss.xml",
+        "https://www.reddit.com/r/CryptoCurrency/.rss",
+        "https://www.reddit.com/r/Bitcoin/.rss",
+        "https://www.reddit.com/r/CryptoMarkets/.rss"
       ],
-      "politics": [
-        "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
-        "https://feeds.reuters.com/reuters/politicsNews",
-        "https://feeds.bbci.co.uk/news/politics/rss.xml"
+      "entertainment": [
+        "https://variety.com/feed/",
+        "https://deadline.com/feed/",
+        "https://www.reddit.com/r/entertainment/.rss",
+        "https://www.reddit.com/r/movies/.rss"
+      ],
+      "sports": [
+        "https://www.espn.com/espn/rss/news",
+        "https://feeds.bbci.co.uk/sport/rss.xml",
+        "https://www.reddit.com/r/sports/.rss"
+      ],
+      "science": [
+        "https://feeds.arstechnica.com/arstechnica/index",
+        "https://www.technologyreview.com/feed/",
+        "https://www.wired.com/feed/rss",
+        "https://www.reddit.com/r/science/.rss",
+        "https://www.reddit.com/r/technology/.rss"
       ]
     },
-    "twitter_accounts": [
-      "whale_alert",
-      "lookonchain",
-      "coindesk",
-      "cointelegraph",
-      "binance",
-      "VitalikButerin"
-    ]
+    "gdelt": {
+      "enabled": true,
+      "endpoint": "https://api.gdeltproject.org/api/v2/doc/doc",
+      "max_records": 10,
+      "timespan": "15min"
+    },
+    "wikipedia": {
+      "enabled": true,
+      "endpoint": "https://en.wikipedia.org/w/api.php",
+      "rc_limit": 50,
+      "edit_burst_threshold": 5,
+      "watch_keywords": [
+        "president",
+        "prime minister",
+        "election",
+        "war",
+        "bitcoin",
+        "federal reserve",
+        "recession",
+        "pandemic",
+        "hurricane",
+        "earthquake",
+        "assassination",
+        "coup",
+        "nuclear",
+        "ceasefire",
+        "sanctions"
+      ]
+    }
   },
   "reddit": {
     "feeds": {
@@ -153,7 +287,7 @@
   "dev_flags": {
     "use_gemini": true,
     "use_ollama": true,
-    "use_twitter": true,
+    "use_stocktwits": true,
     "use_whale_alert": true,
     "use_fear_greed_api": true,
     "use_binance": true,
@@ -163,6 +297,8 @@
     "use_herald": true,
     "use_telegram": true,
     "use_polymarket_api": true,
+    "use_cryptopanic": true,
+    "use_nitter": true,
     "mock_market_data": false,
     "mock_scout_result": false,
     "mock_apex_result": false

@@ -71,21 +71,23 @@ memory.py → log bet + update BETS.md + MEMORY.md
 
 These sources were chosen after reliability analysis. Do NOT substitute with others.
 
-| Source                       | Purpose                       | Auth         | Fallback         |
-| ---------------------------- | ----------------------------- | ------------ | ---------------- |
-| Binance Public API           | Price, volume, RSI-14         | None         | CoinCap          |
-| CoinCap API                  | Price fallback                | None         | —                |
-| CryptoPanic API              | Crypto news + crowd votes     | Free token   | RSS only         |
-| Twitter/X API v2             | Tweet volume velocity         | Bearer token | Reddit velocity  |
-| Reddit RSS + velocity        | Social momentum + trend proxy | None         | Always available |
-| BBC/Reuters/AP RSS           | Geopolitical + politics news  | None         | Always available |
-| Self-calculated Fear & Greed | Derived from above signals    | None         | No dependency    |
+| Source                       | Purpose                       | Auth        | Fallback           |
+| ---------------------------- | ----------------------------- | ----------- | ------------------ |
+| Binance Public API           | Price, volume, RSI-14         | None        | CoinCap            |
+| CoinCap API                  | Price fallback                | None        | —                  |
+| StockTwits API               | Bullish/bearish sentiment     | None        | Always available   |
+| Nitter RSS feeds             | Breaking news via RSS         | None        | Fallback instances |
+| Telegram public channels     | Channel announcements         | API ID/Hash | Graceful degrade   |
+| Reddit RSS + velocity        | Social momentum + trend proxy | None        | Always available   |
+| BBC/Reuters/AP RSS           | Geopolitical + politics news  | None        | Always available   |
+| Self-calculated Fear & Greed | Derived from above signals    | None        | No dependency      |
 
 **DROPPED (do not re-add):**
 
 - CoinGecko — rate limits, 429 errors, throttles free users
 - Google Trends / pytrends — CAPTCHA blocks on Windows, breaks silently
 - alternative.me Fear & Greed — single point of failure, updates once/day
+- Twitter/X API v2 — paid tier required, velocity monitoring now via StockTwits
 
 ---
 
@@ -148,16 +150,14 @@ polymarket-agent/
   },
   "telegram": {
     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
-    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID",
+    "api_id": "YOUR_TELEGRAM_API_ID",
+    "api_hash": "YOUR_TELEGRAM_API_HASH"
   },
-  "twitter": {
-    "bearer_token": "YOUR_TWITTER_BEARER_TOKEN",
-    "api_key": "YOUR_TWITTER_API_KEY",
-    "api_secret": "YOUR_TWITTER_API_SECRET",
-    "access_token": "YOUR_TWITTER_ACCESS_TOKEN",
-    "access_token_secret": "YOUR_TWITTER_ACCESS_TOKEN_SECRET",
+  "stocktwits": {
+    "base_url": "https://api.stocktwits.com/api/2",
     "enabled": true,
-    "fallback_to_reddit": true
+    "symbols": ["BTC.X", "ETH.X", "SOL.X", "XRP.X"]
   },
   "cryptopanic": {
     "auth_token": "YOUR_CRYPTOPANIC_AUTH_TOKEN",
@@ -280,15 +280,16 @@ polymarket-agent/
 You are SCOUT, a market sentiment analyst for Polymarket prediction markets.
 
 You receive raw market signals (Binance price/RSI, Fear & Greed, CryptoPanic news
-with crowd votes, Twitter/X tweet velocity, Reddit post velocity, news headlines,
-HERALD breaking news signal if active, and Polymarket YES/NO prices).
+with crowd votes, StockTwits sentiment, Nitter breaking news, Telegram announcements,
+Reddit post velocity, news headlines, HERALD breaking news signal if active, and
+Polymarket YES/NO prices).
 
 Your job: analyze ALL signals holistically and determine whether the market's
 current YES price is likely UNDERPRICED or OVERPRICED.
 
 Analyze in this order:
 1. EXTREMES FIRST — RSI > 70 or < 30, Fear & Greed at extremes = contrarian signal
-2. MOMENTUM SECOND — Twitter velocity, HERALD breaking signal = directional signal
+2. MOMENTUM SECOND — StockTwits panic signal, Nitter breaking news, HERALD signal = directional signal
 3. CROWD THIRD — Reddit velocity, CryptoPanic vote ratio = retail mood
 4. MARKET STRUCTURE FOURTH — Polymarket YES/NO prices vs signals = consensus check
 
@@ -482,9 +483,10 @@ Every 15 minutes (or immediately on HERALD signal):
 requests>=2.31.0
 feedparser>=6.0.11
 google-generativeai>=0.8.0
-tweepy>=4.14.0
+telethon>=1.36.0
 schedule>=1.2.0
 python-dateutil>=2.8.2
+python-dotenv>=1.0.0
 # py-clob-client>=0.18.0   (uncomment for live trading)
 # web3>=6.0.0               (uncomment for live trading)
 ```
@@ -512,11 +514,33 @@ uv run main.py
 - Paper trading mode active (paper_trading: true)
 - API keys needed before first run:
   - Gemini API key → aistudio.google.com
-  - Telegram bot token + chat ID → already have from Binance bot
-  - Twitter/X bearer token → developer.twitter.com
+  - Telegram API ID & Hash (for public channel reading) → my.telegram.org/apps (free, no phone required)
   - CryptoPanic auth token → cryptopanic.com/api/v1
   - Polymarket keys → generate via py-clob-client after MetaMask setup
   - Polygon wallet private key → MetaMask export
+
+---
+
+## SENTIMENT SOURCES (FREE ALTERNATIVES)
+
+1. **StockTwits API** — Bullish/bearish sentiment ratio for BTC.X, ETH.X, SOL.X, XRP.X
+   - No authentication required
+   - Endpoint: `https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json`
+   - Signal: panic when bearish > 70%
+
+2. **Nitter RSS Feeds** — Twitter/X alternative for breaking news
+   - Base: `https://nitter.poast.org/{username}/rss`
+   - Fallback instances: privacydev.net, tiekoetter.com
+   - Monitored accounts: whale_alert, lookonchain, VitalikButerin, binance, cointelegraph, coindesk
+   - Polled every 60 seconds like other RSS feeds
+
+3. **Telegram Public Channels** — Real-time announcements
+   - Channels: @whale_alert_io, @cointelegraph, @binance_announcements, @coindesk
+   - Get free API ID & Hash: my.telegram.org/apps
+   - No phone number required for reading public channels
+
+4. **Reddit RSS** — Unchanged, kept as is
+   - r/cryptocurrency, r/bitcoin, r/cryptomarkets
 
 ---
 

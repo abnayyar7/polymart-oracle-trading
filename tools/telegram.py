@@ -12,7 +12,6 @@ Notification types:
 """
 
 import json
-import html
 import logging
 import re
 from pathlib import Path
@@ -28,8 +27,20 @@ _BASE_URL = "https://api.telegram.org/bot{token}/sendMessage"
 _UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
 
+def escape_html(text: str) -> str:
+    """Escape special HTML characters for Telegram payloads."""
+    return (
+        str(text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("$", "&#36;")
+        .replace('"', "&quot;")
+    )
+
+
 def _escape_html(text: str) -> str:
-    return html.escape(text or "", quote=False)
+    return escape_html(text)
 
 
 def _strip_html_tags(text: str) -> str:
@@ -127,17 +138,29 @@ def send_message(text: str, config: dict | None = None, parse_mode: str = "HTML"
 # Startup / shutdown / system
 # ---------------------------------------------------------------------------
 
-def notify_startup(config: dict, paper: bool = True):
+def notify_startup(config: dict, paper: bool = True, health: dict | None = None):
+    """Send startup message with optional component health-check results."""
     mode = "PAPER TRADING" if paper else "LIVE TRADING"
     balance = _get_balance_str(config, "paper" if paper else "live")
-    text = (
-        f"<b>ORACLE v3.0 — ONLINE</b>\n"
-        f"Mode: {mode}\n"
-        f"Balance: {balance}\n"
-        f"Scan interval: {config.get('betting', {}).get('scan_interval_minutes', 15)} min\n"
-        f"HERALD: {'enabled' if config.get('herald', {}).get('enabled') else 'disabled'}"
-    )
-    send_message(text, config)
+    interval = config.get("betting", {}).get("scan_interval_minutes", 15)
+
+    def _status(val: bool | None) -> str:
+        if val is None:
+            return "DISABLED"
+        return "OK" if val else "NOT OK"
+
+    lines = [f"<b>ORACLE v3.0 — ONLINE</b>", f"Mode: {mode}"]
+    if health:
+        lines += [
+            f"HERALD: {_status(health.get('herald'))}",
+            f"SCOUT (Ollama): {_status(health.get('scout'))}",
+            f"APEX (Gemini): {_status(health.get('gemini'))}",
+            f"Polymarket: {_status(health.get('polymarket'))}",
+        ]
+    else:
+        lines.append(f"HERALD: {'enabled' if config.get('herald', {}).get('enabled') else 'disabled'}")
+    lines += [f"Balance: {balance}", f"First scan: immediate, then every {interval} min"]
+    send_message("\n".join(lines), config)
 
 
 def notify_shutdown(config: dict, reason: str = "Manual stop"):
@@ -181,7 +204,7 @@ def notify_bet_placed(bet: dict, config: dict):
     text = (
         f"<b>[{mode}] BET PLACED ({order_type})</b>\n"
         f"Side: <b>{side}</b>\n"
-        f"Market: {bet['market_question'][:80]}\n"
+        f"Market: {_escape_html(bet['market_question'][:80])}\n"
         f"Entry: ${bet['entry_price']:.3f} | Size: ${bet['bet_usdc']:.2f} | Fee: ${fee:.4f}\n"
         f"SCOUT: {bet['scout_confidence']}% | APEX: {bet['apex_confidence']}%\n"
         f"Exit: {bet['exit_strategy']}"
@@ -201,9 +224,9 @@ def notify_bet_closed(bet: dict, config: dict):
     bal = _get_balance_str(config, bet.get("mode", "paper"))
     text = (
         f"<b>[{mode}] BET {status}</b>\n"
-        f"Market: {bet['market_question'][:80]}\n"
+        f"Market: {_escape_html(bet['market_question'][:80])}\n"
         f"Side: {bet['side']} | P&L: ${pnl:+.4f} | Fee paid: ${fee:.4f}\n"
-        f"Reason: {bet.get('close_reason', 'N/A')} | Balance: {bal}"
+        f"Reason: {_escape_html(bet.get('close_reason', 'N/A'))} | Balance: {bal}"
     )
     send_message(text, config)
 
@@ -213,13 +236,95 @@ def notify_bet_closed(bet: dict, config: dict):
 # ---------------------------------------------------------------------------
 
 def notify_herald_signal(signal: dict, config: dict):
-    headlines = "\n".join(f"  • {h}" for h in signal.get("headlines", [])[:3])
+    top_headline = signal.get("headlines", [""])[0] if signal.get("headlines") else "N/A"
     text = (
         f"<b>HERALD — BREAKING SIGNAL</b>\n"
-        f"Keyword: <code>{signal['keyword']}</code>\n"
-        f"Articles: {signal['article_count']} from {signal['source_count']} sources\n"
-        f"Confidence boost: +{signal['boost']}%\n"
-        f"Headlines:\n{headlines}"
+        f"Keyword: <code>{_escape_html(signal.get('keyword', ''))}</code>\n"
+        f"Unique articles: {signal.get('article_count', 0)} from "
+        f"{signal.get('source_count', 0)} sources\n"
+        f"Confidence boost: +{signal.get('boost', 0)}%\n"
+        f"Top headline: {_escape_html(top_headline[:120])}"
+    )
+    send_message(text, config)
+
+
+def notify_scout_analyzing(signal: dict, matched_markets: list[dict], config: dict):
+    """Sent immediately after HERALD fires and markets have been matched — before SCOUT runs."""
+    keyword = signal.get("keyword", "")
+    top = matched_markets[0] if matched_markets else {}
+    text = (
+        f"<b>SCOUT ANALYZING</b>\n"
+        f"Signal: <code>{_escape_html(keyword)}</code>\n"
+        f"Matched markets: {len(matched_markets)}\n"
+        f"Top market: {_escape_html(top.get('question', 'N/A')[:80])}\n"
+        f"Running sentiment analysis..."
+    )
+    send_message(text, config)
+
+
+def notify_apex_decision(market: dict, scout_result: dict, apex_result: dict, account_state: dict, config: dict):
+    """
+    Sent for EVERY APEX decision — both placed bets (confirmation) and SKIP.
+    For placed bets, notify_bet_placed is also sent afterward with execution details.
+    """
+    action = apex_result.get("action", "SKIP")
+    mode_tag = "[PAPER]" if config.get("betting", {}).get("paper_trading", True) else "[LIVE]"
+    balance = account_state.get("current_balance", 0.0)
+
+    if action == "SKIP":
+        header = f"SKIPPED"
+        body = f"Skip reason: {_escape_html(apex_result.get('skip_reason', 'N/A')[:120])}\n"
+    else:
+        side = apex_result.get("bet_side", "?")
+        header = f"BET {side} {mode_tag}"
+        bet_size = apex_result.get("bet_usdc") or 0.0
+        side_key = "yes_price" if side == "YES" else "no_price"
+        entry = market.get(side_key, 0.5)
+        body = (
+            f"Bet size: ${bet_size:.2f} | Entry: {entry:.3f}\n"
+        )
+
+    text = (
+        f"<b>{header}</b>\n"
+        f"Market: {_escape_html(market.get('question', '')[:80])}\n"
+        f"Decision: {action}\n"
+        f"SCOUT confidence: {scout_result.get('confidence', 0)}%\n"
+        f"APEX reasoning: {_escape_html(apex_result.get('reasoning', '')[:140])}\n"
+        f"{body}"
+        f"Balance: ${balance:.2f}"
+    )
+    send_message(text, config)
+
+
+def notify_cycle_summary(stats: dict, config: dict):
+    """Sent at the end of every 15-minute scan cycle."""
+    fetched      = stats.get("markets_scanned", 0)
+    prefiltered  = stats.get("markets_prefiltered", 0)
+    candidates   = stats.get("markets_candidates", 0)
+    analyzed     = stats.get("markets_analyzed", 0)
+    to_apex      = stats.get("markets_to_apex", 0)
+    bets_placed  = stats.get("bets_placed", 0)
+
+    # Gate rejection breakdown (top rules only)
+    gate_stats: dict = stats.get("gate_stats", {})
+    gate_lines = ""
+    if gate_stats:
+        top = sorted(gate_stats.items(), key=lambda x: x[1], reverse=True)[:4]
+        gate_lines = "\nGate rejections: " + " | ".join(
+            f"{rule.split('_')[0]}={count}" for rule, count in top
+        )
+
+    text = (
+        f"<b>CYCLE COMPLETE</b>\n"
+        f"Funnel: {fetched} fetched"
+        f" → {prefiltered} prefiltered"
+        f" → {candidates} SCOUT candidates"
+        f" → {analyzed} analyzed"
+        f" → {to_apex} to APEX"
+        f" → {bets_placed} bets placed"
+        f"{gate_lines}\n"
+        f"Active signals: {stats.get('signals_fired', 0)}\n"
+        f"Balance: ${stats.get('balance', 0.0):.2f}"
     )
     send_message(text, config)
 
@@ -227,7 +332,7 @@ def notify_herald_signal(signal: dict, config: dict):
 def notify_arbitrage(market: dict, config: dict):
     text = (
         f"<b>ARBITRAGE OPPORTUNITY</b>\n"
-        f"Market: {market['question'][:80]}\n"
+        f"Market: {_escape_html(market['question'][:80])}\n"
         f"YES: {market['yes_price']:.3f} | NO: {market['no_price']:.3f}\n"
         f"Sum: {market['yes_price'] + market['no_price']:.3f} (< 0.97)\n"
         f"Volume: ${market['volume']:,.0f}"
@@ -238,7 +343,7 @@ def notify_arbitrage(market: dict, config: dict):
 def notify_sniper(market: dict, config: dict):
     text = (
         f"<b>SNIPER OPPORTUNITY</b>\n"
-        f"Market: {market['question'][:80]}\n"
+        f"Market: {_escape_html(market['question'][:80])}\n"
         f"YES price: {market['yes_price']:.3f} ({market['yes_price']*100:.1f}%)\n"
         f"Volume: ${market['volume']:,.0f} | Days: {market['days_to_resolution']:.0f}\n"
         f"Target: {market['yes_price'] * 2.5:.3f} (2.5x)"
@@ -412,8 +517,10 @@ def command_help_text() -> str:
         "<b>ORACLE Commands</b>\n"
         "/status — runtime state\n"
         "/balance — paper/live balances\n"
-        "/openbets — list open bets\n"
-        "/costs — Gemini costs\n"
+        "/openbets — list open positions\n"
+        "/bets — last 10 bets (current mode)\n"
+        "/pnl — P&amp;L summary with win rate\n"
+        "/costs — Gemini API costs\n"
         "/pause — pause scheduled scans\n"
         "/resume — resume scheduled scans\n"
         "/help — show this help"

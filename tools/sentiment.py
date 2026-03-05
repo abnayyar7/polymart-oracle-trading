@@ -5,13 +5,13 @@ Sources (in reliability order):
   1. Binance Public API    — price, volume, RSI-14
   2. CoinCap API           — price fallback
   3. Whale Alert API       — on-chain large transaction detection
-  4. Twitter/X API v2      — tweet volume velocity
+  4. StockTwits API        — bullish/bearish sentiment ratio
   5. Reddit RSS + velocity — social momentum
   6. BBC/Reuters/AP RSS    — geopolitical / politics headlines
   7. alternative.me FNG    — baseline crowd sentiment (0-100, updates hourly)
   8. Self-calculated Fear & Greed (derived from above)
 
-DROPPED (do not re-add): CoinGecko, Google Trends / pytrends, CryptoPanic
+DROPPED (do not re-add): CoinGecko, Google Trends / pytrends, CryptoPanic, Twitter/X API
 """
 
 import json
@@ -238,45 +238,196 @@ def get_alternative_fear_and_greed(config: dict = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Twitter / X
+# StockTwits Sentiment
 # ---------------------------------------------------------------------------
 
-def get_twitter_velocity(query: str, config: dict = None) -> dict:
-    """Returns tweet count in last hour as velocity proxy. Falls back to Reddit."""
-    if not _dev(config, "use_twitter", True):
-        logger.info("[DEV] use_twitter=false — using Reddit velocity fallback")
-        return _reddit_velocity_fallback(query, config)
-    cfg = (config or {}).get("twitter", {})
-    if not cfg.get("enabled", True):
-        return _reddit_velocity_fallback(query, config)
-    token = cfg.get("bearer_token", "")
-    if not token or token.startswith("YOUR_"):
-        logger.debug("Twitter bearer token not configured, falling back to Reddit.")
-        return _reddit_velocity_fallback(query, config)
+def get_stocktwits_sentiment(symbol: str = "BTC.X", config: dict = None) -> dict:
+    """
+    Fetch bullish/bearish sentiment ratio from StockTwits.
+    No API key required.
+    
+    Returns sentiment dict with:
+      - bullish_pct: percentage of bullish messages
+      - bearish_pct: percentage of bearish messages
+      - signal: "panic" if bearish > 70% (sniper opportunity)
+      - message_count: total messages analyzed
+    
+    Monitored symbols: BTC.X, ETH.X, SOL.X, XRP.X
+    """
+    _empty = {
+        "symbol": symbol,
+        "bullish_pct": 50,
+        "bearish_pct": 50,
+        "signal": "neutral",
+        "message_count": 0,
+        "source": "none",
+    }
+    
+    if not _dev(config, "use_stocktwits", True):
+        logger.info("[DEV] use_stocktwits=false — skipping StockTwits")
+        return _empty
+    
+    base_url = (config or {}).get("stocktwits", {}).get("base_url", "https://api.stocktwits.com/api/2")
+    
     try:
-        import tweepy
-        client = tweepy.Client(bearer_token=token, wait_on_rate_limit=False)
-        start_time = datetime.now(timezone.utc) - timedelta(hours=1)
-        response = client.search_recent_tweets(
-            query=f"{query} -is:retweet lang:en",
-            start_time=start_time,
-            max_results=100,
+        r = _SESSION.get(
+            f"{base_url}/streams/symbol/{symbol}.json",
+            timeout=10,
         )
-        count = len(response.data) if response.data else 0
-        return {"source": "twitter", "query": query, "tweet_count_1h": count}
+        r.raise_for_status()
+        data = r.json()
+        
+        messages = data.get("messages", [])
+        if not messages:
+            return _empty
+        
+        bullish_count = sum(1 for msg in messages if msg.get("sentiment") == "bullish")
+        bearish_count = sum(1 for msg in messages if msg.get("sentiment") == "bearish")
+        total = len(messages)
+        
+        bullish_pct = round((bullish_count / total) * 100, 1) if total > 0 else 50
+        bearish_pct = round((bearish_count / total) * 100, 1) if total > 0 else 50
+        
+        # Panic signal when bearish > 70% (sniper opportunity)
+        signal = "panic" if bearish_pct > 70 else "neutral"
+        
+        logger.info(
+            "StockTwits %s: %d messages, %.1f%% bullish, %.1f%% bearish [%s]",
+            symbol, total, bullish_pct, bearish_pct, signal,
+        )
+        
+        return {
+            "symbol": symbol,
+            "bullish_pct": bullish_pct,
+            "bearish_pct": bearish_pct,
+            "signal": signal,
+            "message_count": total,
+            "source": "stocktwits",
+        }
     except Exception as exc:
-        logger.warning("Twitter velocity failed (%s), falling back to Reddit.", exc)
-        if cfg.get("fallback_to_reddit", True):
-            return _reddit_velocity_fallback(query, config)
-        return {"source": "none", "query": query, "tweet_count_1h": 0}
+        logger.warning("StockTwits fetch failed for %s: %s", symbol, exc)
+        return _empty
 
 
-def _reddit_velocity_fallback(query: str, config: dict = None) -> dict:
-    """Count recent Reddit posts mentioning the query across configured subreddits."""
-    if not _dev(config, "use_reddit", True):
-        return {"source": "none", "query": query, "tweet_count_1h": 0}
+# ---------------------------------------------------------------------------
+# CryptoPanic crowd sentiment
+# ---------------------------------------------------------------------------
+
+def get_cryptopanic_signals(config: dict = None) -> dict:
+    """
+    Fetch latest crypto news + crowd vote sentiment from CryptoPanic API.
+    Requires free auth_token from cryptopanic.com/api/v1.
+    Returns bullish_ratio (0-1), article_count, and recent titles.
+    Gracefully returns empty signals if token not configured.
+    """
+    _empty = {
+        "enabled": False,
+        "bullish_ratio": 0.5,
+        "bearish_ratio": 0.5,
+        "article_count": 0,
+        "recent_titles": [],
+    }
+
+    if not _dev(config, "use_cryptopanic", True):
+        logger.info("[DEV] use_cryptopanic=false — skipping CryptoPanic")
+        return _empty
+
+    cfg = (config or {}).get("cryptopanic", {})
+    if not cfg.get("enabled", True):
+        return _empty
+
+    token = cfg.get("auth_token", "")
+    if not token:
+        logger.debug("CryptoPanic auth_token not configured, skipping.")
+        return _empty
+
+    base_url = cfg.get("base_url", "https://cryptopanic.com/api/v1")
+    try:
+        r = _SESSION.get(
+            f"{base_url}/posts/",
+            params={"auth_token": token, "filter": "hot", "public": "true"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        if not results:
+            return _empty
+
+        bullish = sum(1 for p in results if p.get("votes", {}).get("positive", 0) >
+                     p.get("votes", {}).get("negative", 0))
+        bearish = sum(1 for p in results if p.get("votes", {}).get("negative", 0) >
+                     p.get("votes", {}).get("positive", 0))
+        total = len(results)
+        bullish_ratio = round(bullish / total, 3) if total > 0 else 0.5
+        bearish_ratio = round(bearish / total, 3) if total > 0 else 0.5
+        titles = [p.get("title", "") for p in results[:8] if p.get("title")]
+
+        logger.info(
+            "CryptoPanic: %d posts, bullish=%.2f bearish=%.2f",
+            total, bullish_ratio, bearish_ratio,
+        )
+        return {
+            "enabled": True,
+            "bullish_ratio": bullish_ratio,
+            "bearish_ratio": bearish_ratio,
+            "article_count": total,
+            "recent_titles": titles,
+        }
+    except Exception as exc:
+        logger.warning("CryptoPanic fetch failed: %s", exc)
+        return _empty
+
+
+# ---------------------------------------------------------------------------
+# Nitter RSS headlines (breaking news from key crypto/news accounts)
+# ---------------------------------------------------------------------------
+
+def get_nitter_headlines(config: dict = None, max_per_account: int = 3) -> list[str]:
+    """
+    Fetch recent posts from Nitter RSS feeds for configured accounts.
+    Returns a list of headline strings (up to max_per_account × account count).
+    Falls back through nitter instances on failure.
+    """
+    if not _dev(config, "use_nitter", True):
+        logger.info("[DEV] use_nitter=false — skipping Nitter RSS")
+        return []
+
+    herald_cfg = (config or {}).get("herald", {})
+    accounts: list[str] = herald_cfg.get("nitter_accounts", [])
+    if not accounts:
+        return []
+
+    nitter_instances = [
+        "https://nitter.poast.org",
+        "https://nitter.privacydev.net",
+        "https://nitter.tiekoetter.com",
+    ]
+    headlines: list[str] = []
+
+    for account in accounts[:6]:  # cap to 6 accounts to avoid slowing signal collection
+        for instance in nitter_instances:
+            url = f"{instance}/{account}/rss"
+            try:
+                feed = feedparser.parse(url, request_headers={"User-Agent": "ORACLE-SCOUT/3.0"})
+                for entry in feed.entries[:max_per_account]:
+                    title = entry.get("title", "").strip()
+                    if title:
+                        headlines.append(f"@{account}: {title}")
+                break  # success — don't try other instances
+            except Exception as exc:
+                logger.debug("Nitter fetch failed (%s/%s): %s", instance, account, exc)
+
+    return headlines
+
+
+# ---------------------------------------------------------------------------
+# Twitter / X  [DEPRECATED — replaced with StockTwits]
+# ---------------------------------------------------------------------------
+
+def get_market_velocity(query: str, config: dict = None) -> dict:
+    """Returns post count as velocity proxy, sourced from Reddit RSS (primary source)."""
     cfg = (config or {}).get("reddit", {})
-    all_feeds = []
+    all_feeds: list[str] = []
     for feeds in cfg.get("feeds", {}).values():
         all_feeds.extend(feeds)
     window_hours = cfg.get("velocity_window_hours", 24)
@@ -284,18 +435,23 @@ def _reddit_velocity_fallback(query: str, config: dict = None) -> dict:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     q_lower = query.lower()
     count = 0
-    for url in all_feeds:
-        try:
-            feed = feedparser.parse(url, request_headers={"User-Agent": "ORACLE/3.0"})
-            for entry in feed.entries[:max_posts]:
-                title = (entry.get("title") or "").lower()
-                if q_lower in title:
-                    pub = _parse_entry_time(entry)
-                    if pub and pub >= cutoff:
-                        count += 1
-        except Exception as exc:
-            logger.debug("Reddit feed failed (%s): %s", url, exc)
-    return {"source": "reddit_fallback", "query": query, "tweet_count_1h": count}
+    try:
+        for url in all_feeds:
+            try:
+                feed = feedparser.parse(url, request_headers={"User-Agent": "ORACLE/3.0"})
+                for entry in feed.entries[:max_posts]:
+                    title = (entry.get("title") or "").lower()
+                    if q_lower in title:
+                        pub = _parse_entry_time(entry)
+                        if pub and pub >= cutoff:
+                            count += 1
+            except Exception as exc:
+                logger.debug("Reddit feed failed (%s): %s", url, exc)
+        return {"source": "reddit", "query": query, "post_count_1h": count}
+    except Exception as exc:
+        logger.warning("Market velocity fetch failed: %s", exc)
+        return {"source": "none", "query": query, "post_count_1h": 0}
+
 
 
 def _parse_entry_time(entry) -> datetime | None:
@@ -452,9 +608,30 @@ def collect_signals(market: dict, config: dict, herald_boost: int = 0) -> dict:
     fng_data = get_alternative_fear_and_greed(cfg) if category == "crypto" else \
         {"enabled": False, "score": 50, "label": "Neutral"}
 
-    # Twitter / Reddit velocity for market-specific query
+    # StockTwits sentiment (crypto markets only)
+    stocktwits_data = {}
+    if category == "crypto":
+        stw_symbol = "BTC.X"
+        if "eth" in market.get("question", "").lower():
+            stw_symbol = "ETH.X"
+        elif "sol" in market.get("question", "").lower():
+            stw_symbol = "SOL.X"
+        elif "xrp" in market.get("question", "").lower():
+            stw_symbol = "XRP.X"
+        stocktwits_data = get_stocktwits_sentiment(stw_symbol, cfg)
+    else:
+        stocktwits_data = {
+            "symbol": "",
+            "bullish_pct": 50,
+            "bearish_pct": 50,
+            "signal": "neutral",
+            "message_count": 0,
+            "source": "none",
+        }
+
+    # Market velocity (Reddit-sourced)
     question_words = market.get("question", "")[:50]
-    twitter_data = get_twitter_velocity(question_words, cfg)
+    market_velocity = get_market_velocity(question_words, cfg)
 
     # Self-calculated Fear & Greed (blends price, RSI, reddit, FNG)
     fg = calc_fear_and_greed(
@@ -464,12 +641,24 @@ def collect_signals(market: dict, config: dict, herald_boost: int = 0) -> dict:
         fng_score=fng_data.get("score", 50.0),
     )
 
+    # CryptoPanic crowd sentiment (crypto markets only)
+    cryptopanic_data = get_cryptopanic_signals(cfg) if category == "crypto" else {
+        "enabled": False, "bullish_ratio": 0.5, "bearish_ratio": 0.5,
+        "article_count": 0, "recent_titles": [],
+    }
+
+    # Nitter headlines (breaking news from key accounts)
+    nitter_headlines = get_nitter_headlines(cfg)
+
     # RSS headlines (geopolitical focus for politics markets)
     if category == "politics":
         headline_feeds = cfg.get("herald", {}).get("feeds", {}).get("politics", [])[:3]
     else:
         headline_feeds = cfg.get("herald", {}).get("feeds", {}).get("crypto", [])[:3]
-    headlines = get_rss_headlines(feeds=headline_feeds, config=cfg)
+    rss_headlines = get_rss_headlines(feeds=headline_feeds, config=cfg)
+
+    # Merge Nitter + RSS headlines (Nitter first as more real-time)
+    all_headlines = (nitter_headlines + rss_headlines)[:12]
 
     # Combine herald boost + whale alert boost
     total_boost = herald_boost + whale_data.get("confidence_boost", 0)
@@ -493,10 +682,19 @@ def collect_signals(market: dict, config: dict, herald_boost: int = 0) -> dict:
         "whale_detected": whale_data.get("whale_detected", False),
         "whale_tx_count": whale_data.get("tx_count", 0),
         "whale_total_usd": whale_data.get("total_usd", 0.0),
-        "twitter_tweet_count_1h": twitter_data.get("tweet_count_1h", 0),
-        "twitter_source": twitter_data.get("source", "none"),
+        "stocktwits_symbol": stocktwits_data.get("symbol", ""),
+        "stocktwits_bullish_pct": stocktwits_data.get("bullish_pct", 50),
+        "stocktwits_bearish_pct": stocktwits_data.get("bearish_pct", 50),
+        "stocktwits_signal": stocktwits_data.get("signal", "neutral"),
+        "stocktwits_message_count": stocktwits_data.get("message_count", 0),
+        "cryptopanic_bullish_ratio": cryptopanic_data.get("bullish_ratio", 0.5),
+        "cryptopanic_article_count": cryptopanic_data.get("article_count", 0),
+        "cryptopanic_recent_titles": cryptopanic_data.get("recent_titles", []),
+        "market_velocity_count": market_velocity.get("post_count_1h", 0),
+        "market_velocity_source": market_velocity.get("source", "none"),
         "reddit_post_count_24h": reddit_count,
-        "rss_headlines": headlines[:10],
+        "nitter_headlines": nitter_headlines[:6],
+        "rss_headlines": all_headlines[:10],
         "herald_boost": herald_boost,
         "herald_active": herald_boost > 0,
         "total_confidence_boost": total_boost,

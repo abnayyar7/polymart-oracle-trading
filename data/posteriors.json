@@ -1,0 +1,245 @@
+[
+  {
+    "market_id": "0x2745c38ff0617cb345c1d2df19b4f74ea777508e07411e88eeb6ab3affcda2a2",
+    "timestamp": "2026-03-05T17:40:09.538399+00:00",
+    "prior": 0.78,
+    "posterior": 0.78,
+    "posterior_confidence": 78,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xdb68062324c27327e9cd4b21b1dd0deadbc4b860abb8c076b9ba3ed4652ced13",
+    "timestamp": "2026-03-05T18:40:55.150260+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T18:40:55.156547+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+    "timestamp": "2026-03-05T18:40:55.163045+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x84f8b70331323c2fba97d7ceaa9a35fb645a0770d0dbff169d07f24f376766e9",
+    "timestamp": "2026-03-05T18:41:32.547676+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x7b49b9bacb5f435bc10f3b100ff59e2fdd346f7f92a9001881bc9825a0af0f11",
+    "timestamp": "2026-03-05T18:41:32.554324+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x1d54eb5eac2cee8f595f3097c65da7d07f8ab5dee63d7c0c6883eb70e1e9af30",
+    "timestamp": "2026-03-05T18:41:32.562390+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x9c1a953fe92c8357f1b646ba25d983aa83e90c525992db14fb726fa895cb5763",
+    "timestamp": "2026-03-05T18:42:01.542814+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x9e88962df1702474855a3085a161465ac5891c2b674717522c63e5f3813ff7ff",
+    "timestamp": "2026-03-05T18:42:18.145110+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x52a713aa3016b83b376f6c75f09f16780fc9f0948e83ef8d7bfe66f9b96c80ae",
+    "timestamp": "2026-03-05T18:42:18.152169+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T18:44:34.913972+00:00",
+    "prior": 0.82,
+    "posterior": 0.82,
+    "posterior_confidence": 82,
+    "multipliers_applied": [],
+    "direction": "NO"
+  },
+  {
+    "market_id": "0x84f8b70331323c2fba97d7ceaa9a35fb645a0770d0dbff169d07f24f376766e9",
+    "timestamp": "2026-03-05T18:46:01.092318+00:00",
+    "prior": 0.82,
+    "posterior": 0.82,
+    "posterior_confidence": 82,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T19:01:51.763985+00:00",
+    "prior": 0.72,
+    "posterior": 0.72,
+    "posterior_confidence": 72,
+    "multipliers_applied": [],
+    "direction": "NO"
+  },
+  {
+    "market_id": "demo_eth_5k_2025",
+    "timestamp": "2026-03-05T19:11:30.286926+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "demo_btc_100k_2025",
+    "timestamp": "2026-03-05T19:11:30.294152+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+    "timestamp": "2026-03-05T19:19:11.704614+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T19:19:11.712373+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xdb68062324c27327e9cd4b21b1dd0deadbc4b860abb8c076b9ba3ed4652ced13",
+    "timestamp": "2026-03-05T19:19:11.719804+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x84f8b70331323c2fba97d7ceaa9a35fb645a0770d0dbff169d07f24f376766e9",
+    "timestamp": "2026-03-05T19:19:30.229860+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x1d54eb5eac2cee8f595f3097c65da7d07f8ab5dee63d7c0c6883eb70e1e9af30",
+    "timestamp": "2026-03-05T19:19:30.237731+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x7b49b9bacb5f435bc10f3b100ff59e2fdd346f7f92a9001881bc9825a0af0f11",
+    "timestamp": "2026-03-05T19:19:30.245207+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0x9c1a953fe92c8357f1b646ba25d983aa83e90c525992db14fb726fa895cb5763",
+    "timestamp": "2026-03-05T19:20:57.740652+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T19:34:37.380542+00:00",
+    "prior": 0.68,
+    "posterior": 0.68,
+    "posterior_confidence": 68,
+    "multipliers_applied": [],
+    "direction": "NO"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T20:09:28.879893+00:00",
+    "prior": 0.65,
+    "posterior": 0.65,
+    "posterior_confidence": 65,
+    "multipliers_applied": [],
+    "direction": "NO"
+  },
+  {
+    "market_id": "0x84f8b70331323c2fba97d7ceaa9a35fb645a0770d0dbff169d07f24f376766e9",
+    "timestamp": "2026-03-05T20:10:11.888950+00:00",
+    "prior": 0.65,
+    "posterior": 0.65,
+    "posterior_confidence": 65,
+    "multipliers_applied": [],
+    "direction": "YES"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T20:47:10.022742+00:00",
+    "prior": 0.67,
+    "posterior": 0.67,
+    "posterior_confidence": 67,
+    "multipliers_applied": [],
+    "direction": "NO"
+  },
+  {
+    "market_id": "0xbb57ccf5853a85487bc3d83d04d669310d28c6c810758953b9d9b91d1aee89d2",
+    "timestamp": "2026-03-05T21:08:21.680061+00:00",
+    "prior": 0.65,
+    "posterior": 0.65,
+    "posterior_confidence": 65,
+    "multipliers_applied": [],
+    "direction": "NO"
+  }
+]

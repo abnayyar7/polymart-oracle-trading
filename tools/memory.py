@@ -149,6 +149,19 @@ def get_open_bets() -> list[dict]:
     return [b for b in get_all_bets() if b.get("status") == "open"]
 
 
+def has_open_position(market_id: str) -> bool:
+    """Return True if an OPEN bet already exists for this market_id."""
+    if not market_id:
+        return False
+
+    for bet in get_all_bets():
+        if str(bet.get("market_id", "")) != str(market_id):
+            continue
+        if str(bet.get("status", "")).upper() == "OPEN":
+            return True
+    return False
+
+
 def get_closed_bets() -> list[dict]:
     return [b for b in get_all_bets() if b.get("status") in ("won", "lost", "sold")]
 
