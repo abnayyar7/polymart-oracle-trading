@@ -1,22 +1,7 @@
 {
-  "paper_balance": 48.0,
-  "paper_starting": 50.0,
+  "paper_balance": 100.0,
+  "paper_starting": 100.0,
   "live_balance": 0.0,
   "live_starting": 0.0,
-  "history": [
-    {
-      "timestamp": "2026-03-05T20:47:31.083770+00:00",
-      "mode": "paper",
-      "old": 50.0,
-      "new": 49.0,
-      "reason": "Paper bet placed: bet_20260305_204730_0xbb57cc"
-    },
-    {
-      "timestamp": "2026-03-05T21:08:42.236570+00:00",
-      "mode": "paper",
-      "old": 49.0,
-      "new": 48.0,
-      "reason": "Paper bet placed: bet_20260305_210841_0xbb57cc"
-    }
-  ]
+  "history": []
 }

@@ -1,0 +1,84 @@
+{
+  "markets": [
+    {
+      "market_id": "btc_june_120k",
+      "question": "Will BTC be above 120k by June?",
+      "category": "crypto",
+      "outcome": "YES",
+      "snapshots": [
+        {
+          "yes_price": 0.42,
+          "no_price": 0.58,
+          "volume": 8500,
+          "spread": 0.11,
+          "days_to_resolution": 14,
+          "liquidity": 7600
+        },
+        {
+          "yes_price": 0.45,
+          "no_price": 0.55,
+          "volume": 11000,
+          "spread": 0.09,
+          "days_to_resolution": 12,
+          "liquidity": 9800
+        },
+        {
+          "yes_price": 0.49,
+          "no_price": 0.51,
+          "volume": 14000,
+          "spread": 0.08,
+          "days_to_resolution": 10,
+          "liquidity": 12600
+        },
+        {
+          "yes_price": 0.53,
+          "no_price": 0.47,
+          "volume": 16000,
+          "spread": 0.07,
+          "days_to_resolution": 8,
+          "liquidity": 14800
+        }
+      ]
+    },
+    {
+      "market_id": "eth_july_8k",
+      "question": "Will ETH be above 8k by July?",
+      "category": "crypto",
+      "outcome": "NO",
+      "snapshots": [
+        {
+          "yes_price": 0.37,
+          "no_price": 0.63,
+          "volume": 6000,
+          "spread": 0.12,
+          "days_to_resolution": 20,
+          "liquidity": 5200
+        },
+        {
+          "yes_price": 0.35,
+          "no_price": 0.65,
+          "volume": 7200,
+          "spread": 0.1,
+          "days_to_resolution": 18,
+          "liquidity": 6500
+        },
+        {
+          "yes_price": 0.33,
+          "no_price": 0.67,
+          "volume": 8600,
+          "spread": 0.09,
+          "days_to_resolution": 16,
+          "liquidity": 7800
+        },
+        {
+          "yes_price": 0.31,
+          "no_price": 0.69,
+          "volume": 9000,
+          "spread": 0.09,
+          "days_to_resolution": 14,
+          "liquidity": 8200
+        }
+      ]
+    }
+  ]
+}
