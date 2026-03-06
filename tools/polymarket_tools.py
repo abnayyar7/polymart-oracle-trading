@@ -13,6 +13,7 @@ Chain: Polygon Mainnet ONLY (Chain ID 137). Never zkEVM (Chain ID 1101).
 
 import json
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ CONFIG_PATH = ROOT / "config" / "config.json"
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "ORACLE/3.0", "Accept": "application/json"})
+
+HTTP_RETRIES = 3
+HTTP_BACKOFF_SECONDS = 1.0
 
 ARB_THRESHOLD = 0.94        # YES + NO < this = guaranteed arb after 3% fee round-trip
 SNIPER_MAX_YES_PRICE = 0.15  # 1-15%
@@ -283,22 +287,30 @@ def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
             or ""
         )
 
-    def _parse_yes_price(row: dict) -> float:
+    def _parse_yes_price(row: dict) -> float | None:
         outcome_prices = row.get("outcomePrices")
-        if isinstance(outcome_prices, list) and outcome_prices:
-            return max(0.0, min(1.0, _to_float(outcome_prices[0])))
+        if isinstance(outcome_prices, list) and len(outcome_prices) >= 1:
+            p = _to_float(outcome_prices[0])
+            if p > 0:
+                return max(0.0, min(1.0, p))
 
         if row.get("yes_price") is not None:
-            return max(0.0, min(1.0, _to_float(row.get("yes_price"))))
+            p = _to_float(row.get("yes_price"))
+            if p > 0:
+                return max(0.0, min(1.0, p))
 
         tokens = row.get("tokens") or []
         if isinstance(tokens, list) and tokens:
             for tok in tokens:
                 if str(tok.get("outcome", "")).upper() == "YES":
-                    return max(0.0, min(1.0, _to_float(tok.get("price"))))
-            return max(0.0, min(1.0, _to_float(tokens[0].get("price"))))
+                    p = _to_float(tok.get("price"))
+                    if p > 0:
+                        return max(0.0, min(1.0, p))
+            p = _to_float(tokens[0].get("price"))
+            if p > 0:
+                return max(0.0, min(1.0, p))
 
-        return 0.5
+        return None
 
     all_markets: list[dict] = []
     seen_ids: set[str] = set()
@@ -313,10 +325,9 @@ def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
                 "&order=volume&ascending=false"
                 f"&category={cat}"
             )
-            r = _SESSION.get(url, timeout=10)
-            if r.status_code != 200:
+            data = _http_get_json_with_retry(url, timeout=10, source=f"gamma:{cat}")
+            if data is None:
                 continue
-            data = r.json()
             rows = data if isinstance(data, list) else data.get("markets", [])
             for row in rows:
                 market_id = _mid(row)
@@ -334,9 +345,8 @@ def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
             f"?active=true&closed=false&limit={max(limit * 2, 200)}"
             "&order=volume&ascending=false"
         )
-        r = _SESSION.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
+        data = _http_get_json_with_retry(url, timeout=10, source="gamma:top")
+        if data is not None:
             rows = data if isinstance(data, list) else data.get("markets", [])
             for row in rows:
                 market_id = _mid(row)
@@ -349,9 +359,8 @@ def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
 
     # Source 3: sampling-markets fallback
     try:
-        r = _SESSION.get(f"{host}/sampling-markets", timeout=10)
-        if r.status_code == 200:
-            data = r.json()
+        data = _http_get_json_with_retry(f"{host}/sampling-markets", timeout=10, source="sampling-markets")
+        if data is not None:
             rows = data.get("data", []) if isinstance(data, dict) else data
             for row in rows:
                 market_id = _mid(row)
@@ -434,18 +443,34 @@ def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
                 continue
 
             yes_price = _parse_yes_price(row)
+            if yes_price is None:
+                logger.debug("Skipping market missing usable prices: %s", question[:80])
+                continue
             if 0.43 <= yes_price <= 0.57:
                 continue
+
+            outcomes = _extract_outcomes(row)
+            liquidity = _to_float(row.get("liquidity") or row.get("liquidityNum") or row.get("liquidity_num") or volume)
+            timestamp = (
+                row.get("updatedAt")
+                or row.get("updated_at")
+                or row.get("createdAt")
+                or row.get("created_at")
+                or datetime.now(timezone.utc).isoformat()
+            )
 
             market_id = _mid(row)
             viable.append({
                 "id": market_id,
                 "condition_id": market_id,
                 "question": question,
+                "outcomes": outcomes,
                 "yes_price": round(yes_price, 4),
                 "no_price": round(1 - yes_price, 4),
                 "spread": round(spread, 4),
                 "volume": round(volume, 2),
+                "liquidity": round(liquidity, 2),
+                "timestamp": str(timestamp),
                 "days_remaining": round(days_remaining, 2),
                 "days_to_resolution": round(days_remaining, 2),
                 "end_date": str(end_date),
@@ -470,14 +495,22 @@ def _parse_market(raw: dict) -> dict | None:
     try:
         # Extract YES/NO prices from tokens array
         tokens = raw.get("tokens", [])
-        yes_price = no_price = 0.5
+        yes_price = None
+        no_price = None
         for tok in tokens:
             outcome = tok.get("outcome", "").upper()
-            price = float(tok.get("price", 0.5))
+            price = _to_float(tok.get("price"))
             if outcome == "YES":
                 yes_price = price
             elif outcome == "NO":
                 no_price = price
+
+        outcome_prices = raw.get("outcomePrices")
+        if isinstance(outcome_prices, list) and len(outcome_prices) >= 2:
+            if yes_price is None:
+                yes_price = _to_float(outcome_prices[0])
+            if no_price is None:
+                no_price = _to_float(outcome_prices[1])
 
         # Volume in USDC (not consistently present on CLOB payloads)
         volume_keys = ("volume", "volumeNum", "volume_num", "liquidity", "liquidityNum", "liquidity_num")
@@ -494,22 +527,38 @@ def _parse_market(raw: dict) -> dict | None:
         end_date_iso = raw.get("endDateIso") or raw.get("end_date_iso") or raw.get("endDate") or ""
         days_to_resolution = _calc_days(end_date_iso)
 
-        if (yes_price == 0.5 and no_price == 0.5) and len(tokens) >= 2:
+        if (yes_price is None or no_price is None) and len(tokens) >= 2:
             # Not all markets use YES/NO labels; fallback to first two token prices.
-            yes_price = _to_float(tokens[0].get("price")) or 0.5
-            no_price = _to_float(tokens[1].get("price")) or 0.5
+            yes_price = yes_price if yes_price is not None else _to_float(tokens[0].get("price"))
+            no_price = no_price if no_price is not None else _to_float(tokens[1].get("price"))
+
+        if yes_price is None or no_price is None or yes_price <= 0 or no_price <= 0:
+            return None
 
         # Spread
         spread = abs(yes_price + no_price - 1.0)
+
+        outcomes = _extract_outcomes(raw)
+        liquidity = _to_float(raw.get("liquidity") or raw.get("liquidityNum") or raw.get("liquidity_num") or volume)
+        timestamp = (
+            raw.get("updatedAt")
+            or raw.get("updated_at")
+            or raw.get("createdAt")
+            or raw.get("created_at")
+            or datetime.now(timezone.utc).isoformat()
+        )
 
         return {
             "condition_id": raw.get("conditionId", raw.get("condition_id", "")),
             "question": raw.get("question", ""),
             "category": _infer_category(raw.get("question", ""), raw.get("category", ""), raw.get("tags", [])),
+            "outcomes": outcomes,
             "yes_price": round(yes_price, 4),
             "no_price": round(no_price, 4),
             "spread": round(spread, 4),
             "volume": round(volume, 2),
+            "liquidity": round(liquidity, 2),
+            "timestamp": str(timestamp),
             "volume_unknown": volume_unknown,
             "tags": raw.get("tags", []),
             "days_to_resolution": days_to_resolution,
@@ -557,9 +606,9 @@ def _filter_failures(market: dict, betting_cfg: dict, categories: list[str]) -> 
 
 
 def _fetch_sampling_markets(host: str) -> list[dict]:
-    r = _SESSION.get(f"{host}/sampling-markets", timeout=15)
-    r.raise_for_status()
-    raw = r.json()
+    raw = _http_get_json_with_retry(f"{host}/sampling-markets", timeout=15, source="sampling-markets")
+    if raw is None:
+        return []
     return raw if isinstance(raw, list) else raw.get("data", [])
 
 
@@ -579,9 +628,9 @@ def _fetch_gamma_volume_map(max_records: int = 5000, page_size: int = 1000) -> d
             "limit": page_size,
             "offset": offset,
         }
-        r = _SESSION.get(gamma_url, params=params, timeout=20)
-        r.raise_for_status()
-        batch = r.json()
+        batch = _http_get_json_with_retry(gamma_url, params=params, timeout=20, source="gamma-volume")
+        if batch is None:
+            break
         if not isinstance(batch, list) or not batch:
             break
 
@@ -683,6 +732,64 @@ def _to_float(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _extract_outcomes(raw: dict) -> list[str]:
+    outcomes: list[str] = []
+
+    raw_outcomes = raw.get("outcomes")
+    if isinstance(raw_outcomes, list):
+        for item in raw_outcomes:
+            label = str(item).strip()
+            if label:
+                outcomes.append(label)
+
+    tokens = raw.get("tokens") or []
+    if isinstance(tokens, list):
+        for tok in tokens:
+            label = str(tok.get("outcome", "")).strip()
+            if label and label not in outcomes:
+                outcomes.append(label)
+
+    if outcomes:
+        return outcomes
+
+    return ["YES", "NO"]
+
+
+def _http_get_json_with_retry(
+    url: str,
+    *,
+    params: dict | None = None,
+    timeout: int = 10,
+    source: str = "http",
+) -> dict | list | None:
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            response = _SESSION.get(url, params=params, timeout=timeout)
+            if response.status_code == 200:
+                return response.json()
+
+            logger.warning(
+                "%s returned status %s (attempt %d/%d)",
+                source,
+                response.status_code,
+                attempt,
+                HTTP_RETRIES,
+            )
+        except Exception as exc:
+            logger.warning(
+                "%s request failed (attempt %d/%d): %s",
+                source,
+                attempt,
+                HTTP_RETRIES,
+                exc,
+            )
+
+        if attempt < HTTP_RETRIES:
+            time.sleep(HTTP_BACKOFF_SECONDS * attempt)
+
+    return None
 
 
 # ---------------------------------------------------------------------------

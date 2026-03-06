@@ -1,313 +1,228 @@
-"""
-scout_agent.py — SCOUT: Local Ollama sentiment analyst.
+"""Deterministic SCOUT probability model (no LLM dependencies)."""
 
-Model: qwen2.5:14b (AMD RX 9070 XT, Vulkan backend)
-Role: Analyze all raw signals holistically → BULLISH / BEARISH / NEUTRAL + confidence 0-100.
+from __future__ import annotations
 
-Escalates to APEX only if confidence >= 55 (saves Gemini API cost).
-"""
-
-import json
 import logging
-from pathlib import Path
+from collections import defaultdict, deque
 
-import requests
+from tools.market_features import (
+    compute_liquidity_score,
+    compute_momentum,
+    compute_time_decay,
+    compute_volume_acceleration,
+    order_flow_imbalance,
+    price_reversion_signal,
+    spread_anomaly,
+    volume_spike_detector,
+)
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
 
-SCOUT_SYSTEM_PROMPT = """You are SCOUT, a market sentiment analyst for Polymarket prediction markets.
-
-You receive raw market signals (Binance price/RSI, Fear & Greed, CryptoPanic news
-with crowd votes, StockTwits sentiment, Nitter breaking news, Telegram announcements, 
-Reddit post velocity, news headlines, HERALD breaking news signal if active, and 
-Polymarket YES/NO prices).
-
-Your job: analyze ALL signals holistically and determine whether the market's
-current YES price is likely UNDERPRICED or OVERPRICED.
-
-Analyze in this order:
-1. EXTREMES FIRST — RSI > 70 or < 30, Fear & Greed at extremes = contrarian signal
-2. MOMENTUM SECOND — StockTwits panic signal, Nitter breaking news, HERALD signal = directional signal
-3. CROWD THIRD — Reddit velocity, CryptoPanic vote ratio = retail mood
-4. MARKET STRUCTURE FOURTH — Polymarket YES/NO prices vs signals = consensus check
-
-BULLISH = YES is likely to happen → consider BET_YES
-BEARISH = YES is unlikely → consider BET_NO
-NEUTRAL = mixed signals → skip
-
-Confidence 55-64: borderline edge
-Confidence 65-79: reasonable edge
-Confidence 80+: strong edge
-
-Output ONLY valid JSON, no markdown, no preamble:
-{
-  "market_id": "string",
-  "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "narrative": "2-3 sentences",
-  "confidence": 0-100,
-  "key_signals": ["signal1", "signal2", "signal3"],
-  "conflicting_signals": ["opposite signals"],
-  "reasoning_chain": "step-by-step logic"
-}"""
-
-
-def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
-
-
-def _build_signals_prompt(signals: dict) -> str:
-    """Convert signals dict into a structured text block for SCOUT."""
-    return f"""Market: {signals.get('market_question', 'Unknown')}
-Market ID: {signals.get('market_id', '')}
-Category: {signals.get('category', 'crypto')}
-
-=== Polymarket Prices ===
-YES price: {signals.get('polymarket_yes_price', 0.5):.3f}
-NO price:  {signals.get('polymarket_no_price', 0.5):.3f}
-Volume: ${signals.get('market_volume_usdc', 0):,.0f} USDC
-Days to resolution: {signals.get('days_to_resolution', 0):.1f}
-
-=== Binance / Price Data ===
-BTC price: ${signals.get('btc_price', 'N/A')}
-BTC 24h change: {signals.get('btc_price_change_pct_24h', 0):+.2f}%
-BTC 24h volume: ${signals.get('btc_volume_24h', 0):,.0f}
-RSI-14: {signals.get('rsi_14', 'N/A')}
-
-=== Fear & Greed (self-calculated) ===
-Score: {signals.get('fear_greed_score', 50)} / 100
-Label: {signals.get('fear_greed_label', 'Neutral')}
-
-=== CryptoPanic Crowd Sentiment ===
-Bullish ratio: {signals.get('cryptopanic_bullish_ratio', 0.5):.2f} (0=all bearish, 1=all bullish)
-Article count: {signals.get('cryptopanic_article_count', 0)}
-Recent titles: {json.dumps(signals.get('cryptopanic_recent_titles', []), ensure_ascii=False)}
-
-=== Social Velocity ===
-StockTwits sentiment: {signals.get('stocktwits_bearish_pct', 50):.1f}% bearish, {signals.get('stocktwits_bullish_pct', 50):.1f}% bullish (signal: {signals.get('stocktwits_signal', 'neutral')})
-Market velocity (Reddit): {signals.get('market_velocity_count', 0)} posts (source: {signals.get('market_velocity_source', 'none')})
-Reddit post count (24h): {signals.get('reddit_post_count_24h', 0)}
-
-=== HERALD Breaking News ===
-Active: {signals.get('herald_active', False)}
-Confidence boost: +{signals.get('herald_boost', 0)}%
-
-=== Nitter / Social Breaking News ===
-{chr(10).join(f'- {h}' for h in signals.get('nitter_headlines', [])[:6]) or '(none)'}
-
-=== Recent RSS Headlines ===
-{chr(10).join(f'- {h}' for h in signals.get('rss_headlines', [])[:8]) or '(none)'}
-
-Now analyze all signals holistically and output your JSON decision."""
-
-
-def has_signals_for_market(market: dict, signals: dict) -> bool:
-    """Quick check if we have any real signal data for this market."""
-    question = str(market.get("question", "")).lower()
-
-    crypto_keywords = [
-        "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
-        "crypto", "blockchain", "defi", "nft", "altcoin",
-        "binance", "coinbase", "polygon", "matic",
-    ]
-    if any(kw in question for kw in crypto_keywords):
-        return True
-
-    question_words = [w for w in question.split() if len(w) > 4]
-    if not question_words:
-        return False
-
-    news_blocks: list[str] = []
-    for article in signals.get("news_articles", []) or []:
-        news_blocks.append(f"{article.get('title', '')} {article.get('description', '')}")
-    # Backward-compat for existing signal structure
-    news_blocks.extend(signals.get("rss_headlines", []) or [])
-    news_blocks.extend(signals.get("nitter_headlines", []) or [])
-    news_text = " ".join(news_blocks).lower()
-
-    matches = sum(1 for word in question_words if word in news_text)
-    if matches >= 2:
-        return True
-
-    reddit_posts = signals.get("reddit_posts", []) or []
-    reddit_text = " ".join(p.get("title", "") for p in reddit_posts).lower()
-    if not reddit_text:
-        reddit_text = " ".join(signals.get("reddit_titles", []) or []).lower()
-    reddit_matches = sum(1 for word in question_words if word in reddit_text)
-    if reddit_matches >= 2:
-        return True
-
-    herald_keyword = str(signals.get("herald_keyword", "") or "").lower()
-    if herald_keyword and herald_keyword in question:
-        return True
-
-    return False
-
-
-_MOCK_SCOUT_RESULT = {
-    "sentiment": "BULLISH",
-    "narrative": "[MOCK] Hardcoded dev result. Signals look moderately bullish based on simulated data.",
-    "confidence": 68,
-    "key_signals": ["mock_rsi_neutral", "mock_reddit_moderate", "mock_price_stable"],
-    "conflicting_signals": ["mock_low_volume"],
-    "reasoning_chain": "[MOCK] Dev mode active — no Ollama call made.",
-}
-
-# Sentinel returned when no real signal data exists for a market.
-# Treated as a skip by should_escalate() (confidence=0 < 55).
-_NO_DATA_RESULT = {
-    "sentiment": "NEUTRAL",
-    "narrative": "No signal data available for this market.",
-    "confidence": 50,
-    "data_quality": "NO_DATA",
-    "key_signals": [],
-    "conflicting_signals": [],
-    "reasoning_chain": "Skipped: insufficient signal data before Ollama call.",
-}
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
 
 
 class ScoutAgent:
     def __init__(self, config: dict):
         self.config = config
-        self.ollama_url = config.get("ollama", {}).get("base_url", "http://localhost:11434")
-        self.model = config.get("ollama", {}).get("model", "qwen2.5:14b")
-        self.min_confidence = config.get("betting", {}).get("min_confidence", 55)
-        self._session = requests.Session()
+        self.min_confidence = float(config.get("betting", {}).get("min_confidence", 55))
+        self.debug_signals = bool(config.get("DEBUG_SIGNALS", False) or config.get("debug_signals", False))
+        self._price_history = defaultdict(lambda: deque(maxlen=8))
+        self._volume_history = defaultdict(lambda: deque(maxlen=8))
+        self._spread_history = defaultdict(lambda: deque(maxlen=8))
+
+        strategy_cfg = config.get("strategies", {}) or {}
+        self.strategies = {
+            "cross_market_mispricing": bool(strategy_cfg.get("cross_market_mispricing", True)),
+            "momentum_burst": bool(strategy_cfg.get("momentum_burst", True)),
+            "liquidity_shock": bool(strategy_cfg.get("liquidity_shock", True)),
+            "late_resolution_edge": bool(strategy_cfg.get("late_resolution_edge", True)),
+        }
+
+        default_weights = {
+            "momentum": 0.3,
+            "volume": 0.2,
+            "liquidity": 0.2,
+            "reversion": 0.15,
+            "time_decay": 0.15,
+        }
+        cfg_weights = config.get("model_weights", {}) or {}
+        merged = {k: float(cfg_weights.get(k, v)) for k, v in default_weights.items()}
+        total = sum(max(0.0, w) for w in merged.values())
+        if total <= 0:
+            self.model_weights = default_weights
+        else:
+            self.model_weights = {k: max(0.0, w) / total for k, w in merged.items()}
 
     @staticmethod
     def _has_minimum_signals(signals: dict) -> bool:
-        """
-        Return True if at least one real signal source has data.
-        Prevents wasting Ollama compute on markets with zero information.
-        A market passes if it has ANY of:
-          - BTC price data (non-zero)
-          - RSS headlines (any)
-          - Nitter headlines (any)
-          - Reddit velocity (> 0 posts)
-          - CryptoPanic articles (> 0)
-          - Market velocity (> 0 posts)
-        """
-        return any([
-            signals.get("btc_price") is not None and signals.get("btc_price", 0) != 0,
-            bool(signals.get("rss_headlines")),
-            bool(signals.get("nitter_headlines")),
-            signals.get("reddit_post_count_24h", 0) > 0,
-            signals.get("cryptopanic_article_count", 0) > 0,
-            signals.get("market_velocity_count", 0) > 0,
-        ])
+        required = (
+            "market_id",
+            "polymarket_yes_price",
+            "market_volume_usdc",
+            "market_liquidity_usdc",
+            "days_to_resolution",
+        )
+        return all(signals.get(k) is not None for k in required)
 
     def analyze(self, signals: dict) -> dict | None:
-        """
-        Run SCOUT analysis on collected signals.
-        Returns parsed JSON dict, or None if Ollama is unreachable.
-        Returns a NO_DATA sentinel dict if signals are insufficient.
-        """
-        dev = self.config.get("dev_flags", {})
-        market_q = signals.get("market_question", "")[:60]
-
-        if dev.get("mock_scout_result", False):
-            logger.info("[DEV] mock_scout_result=true — returning hardcoded SCOUT result (BULLISH, conf=68)")
-            result = dict(_MOCK_SCOUT_RESULT)
-            result["market_id"] = signals.get("market_id", "")
-            return result
-
-        if not dev.get("use_ollama", True):
-            logger.info("[DEV] use_ollama=false — skipping SCOUT, returning mock NEUTRAL conf=40")
+        """Return deterministic probability, confidence, and feature diagnostics."""
+        if not self._has_minimum_signals(signals):
             return {
                 "market_id": signals.get("market_id", ""),
+                "probability": 0.5,
+                "confidence": 0.0,
                 "sentiment": "NEUTRAL",
-                "narrative": "[DEV] Ollama disabled.",
-                "confidence": 40,
+                "features": {},
+                "narrative": "Insufficient market data to score.",
                 "key_signals": [],
-                "conflicting_signals": [],
-                "reasoning_chain": "[DEV] use_ollama=false",
+                "conflicting_signals": ["missing_required_features"],
+                "reasoning_chain": "Feature model skipped due to incomplete inputs.",
             }
 
-        # Pre-flight: skip expensive Ollama call if no market-relevant signals exist.
-        market = {"question": signals.get("market_question", "")}
-        if not has_signals_for_market(market, signals):
-            logger.info("SCOUT PRE-CHECK: No signals for %s, skipping Ollama", market_q)
-            result = dict(_NO_DATA_RESULT)
-            result["market_id"] = signals.get("market_id", "")
-            return result
+        market_id = str(signals.get("market_id", ""))
+        yes_price = float(signals.get("polymarket_yes_price", 0.5) or 0.5)
+        volume = float(signals.get("market_volume_usdc", 0.0) or 0.0)
+        liquidity_input = float(signals.get("market_liquidity_usdc", 0.0) or 0.0)
+        days_to_resolution = float(signals.get("days_to_resolution", 0.0) or 0.0)
+        spread = float(signals.get("market_spread", 0.0) or 0.0)
+        hours_to_resolution = max(0.0, days_to_resolution * 24.0)
 
-        prompt = _build_signals_prompt(signals)
-        try:
-            response = self._session.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SCOUT_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "top_p": 0.9,
-                        "num_predict": 512,
-                    },
-                },
-                timeout=120,
+        self._price_history[market_id].append(yes_price)
+        self._volume_history[market_id].append(volume)
+        self._spread_history[market_id].append(spread)
+
+        price_series = list(self._price_history[market_id])
+        volume_series = list(self._volume_history[market_id])
+        spread_series = list(self._spread_history[market_id])
+
+        raw_momentum = compute_momentum(price_series)  # [-1, 1]
+        raw_vol_accel = compute_volume_acceleration(volume_series)  # [-1, 1]
+        time_window_hours = max(1.0, min(24.0, hours_to_resolution if hours_to_resolution > 0 else 24.0))
+        liquidity_score = compute_liquidity_score(max(volume, liquidity_input), time_window_hours)  # [0, 1]
+        time_decay = compute_time_decay(hours_to_resolution)  # [0, 1]
+        ofi = order_flow_imbalance(price_series, volume_series)  # [-1, 1]
+        vol_spike = volume_spike_detector(volume_series)  # [0, 1]
+        spread_anom = spread_anomaly(spread_series)  # [0, 1]
+        reversion_signal = price_reversion_signal(price_series)  # [0, 1]
+
+        # Required feature: distance from 0.5 market equilibrium.
+        equilibrium_distance = _clamp(abs(yes_price - 0.5) * 2.0, 0.0, 1.0)
+        equilibrium_signed = _clamp((yes_price - 0.5) * 2.0, -1.0, 1.0)
+        if not self.strategies["cross_market_mispricing"]:
+            equilibrium_distance = 0.0
+            equilibrium_signed = 0.0
+
+        normalized_momentum = _clamp(
+            0.5 * (0.5 + 0.5 * raw_momentum)
+            + 0.3 * (0.5 + 0.5 * equilibrium_signed)
+            + 0.2 * (0.5 + 0.5 * ofi),
+            0.0,
+            1.0,
+        )
+        normalized_vol_accel = _clamp(0.7 * (0.5 + 0.5 * raw_vol_accel) + 0.3 * vol_spike, 0.0, 1.0)
+        adjusted_liquidity = _clamp(liquidity_score * (1.0 - 0.35 * spread_anom), 0.0, 1.0)
+        adjusted_reversion = _clamp(reversion_signal * (1.0 - 0.25 * spread_anom), 0.0, 1.0)
+
+        if not self.strategies["momentum_burst"]:
+            normalized_momentum = 0.5
+            normalized_vol_accel = 0.5
+        if not self.strategies["liquidity_shock"]:
+            spread_anom = 0.0
+            adjusted_liquidity = liquidity_score
+            adjusted_reversion = reversion_signal
+        if not self.strategies["late_resolution_edge"]:
+            time_decay = 0.5
+
+        w = self.model_weights
+
+        probability = _clamp(
+            w["momentum"] * normalized_momentum
+            + w["volume"] * normalized_vol_accel
+            + w["liquidity"] * adjusted_liquidity
+            + w["reversion"] * adjusted_reversion
+            + w["time_decay"] * time_decay,
+            0.0,
+            1.0,
+        )
+
+        if probability >= 0.55:
+            sentiment = "BULLISH"
+        elif probability <= 0.45:
+            sentiment = "BEARISH"
+        else:
+            sentiment = "NEUTRAL"
+
+        confidence = _clamp(50.0 + abs(probability - 0.5) * 100.0 + equilibrium_distance * 10.0, 0.0, 100.0)
+
+        features = {
+            "momentum": round(raw_momentum, 4),
+            "normalized_momentum": round(normalized_momentum, 4),
+            "volume_acceleration": round(raw_vol_accel, 4),
+            "normalized_volume_acceleration": round(normalized_vol_accel, 4),
+            "order_flow_imbalance": round(ofi, 4),
+            "volume_spike": round(vol_spike, 4),
+            "spread_anomaly": round(spread_anom, 4),
+            "price_reversion_signal": round(reversion_signal, 4),
+            "liquidity_score": round(liquidity_score, 4),
+            "adjusted_liquidity": round(adjusted_liquidity, 4),
+            "adjusted_reversion": round(adjusted_reversion, 4),
+            "equilibrium_distance": round(equilibrium_distance, 4),
+            "time_decay": round(time_decay, 4),
+            "hours_to_resolution": round(hours_to_resolution, 2),
+            "weights": {k: round(v, 4) for k, v in w.items()},
+            "strategies": self.strategies,
+        }
+
+        result = {
+            "market_id": market_id,
+            "probability": round(probability, 4),
+            "confidence": round(confidence, 2),
+            "sentiment": sentiment,
+            "features": features,
+            "narrative": "Deterministic model from momentum, volume acceleration, liquidity, and time decay.",
+            "key_signals": [
+                f"momentum={features['momentum']}",
+                f"vol_accel={features['volume_acceleration']}",
+                f"liq={features['liquidity_score']}",
+            ],
+            "conflicting_signals": [],
+            "reasoning_chain": (
+                "prob = w_momentum*momentum + w_volume*volume + w_liquidity*liquidity "
+                "+ w_reversion*reversion + w_time_decay*time_decay"
+            ),
+        }
+
+        logger.info(
+            "SCOUT DET: %s | prob=%.3f conf=%.1f sentiment=%s",
+            signals.get("market_question", "")[:60],
+            result["probability"],
+            result["confidence"],
+            result["sentiment"],
+        )
+        if self.debug_signals:
+            logger.info(
+                "SCOUT FEATURES: market=%s mom=%.4f ofi=%.4f vol_accel=%.4f vol_spike=%.4f liq=%.4f "
+                "spread_anom=%.4f rev=%.4f time=%.4f w=%s strat=%s",
+                market_id,
+                features["momentum"],
+                features["order_flow_imbalance"],
+                features["volume_acceleration"],
+                features["volume_spike"],
+                features["adjusted_liquidity"],
+                features["spread_anomaly"],
+                features["adjusted_reversion"],
+                features["time_decay"],
+                features["weights"],
+                features["strategies"],
             )
-            response.raise_for_status()
-            content = response.json()["message"]["content"].strip()
-            result = self._parse_json_response(content)
-            if result:
-                result["market_id"] = signals.get("market_id", result.get("market_id", ""))
-
-                # Detect "I have no idea" response: NEUTRAL with exactly 50% confidence
-                if result.get("sentiment") == "NEUTRAL" and result.get("confidence") == 50:
-                    logger.info(
-                        "SCOUT: No signal data available for %s (returned 50%% NEUTRAL — treating as NO_DATA)",
-                        market_q,
-                    )
-                    result["sentiment"] = "NO_DATA"
-                    result["confidence"] = 0
-                    return result
-
-                logger.info(
-                    "SCOUT: %s | %s | confidence=%d%%",
-                    market_q,
-                    result.get("sentiment"),
-                    result.get("confidence", 0),
-                )
-            return result
-        except requests.exceptions.ConnectionError:
-            logger.error("SCOUT: Ollama not running at %s. Start with: ollama serve", self.ollama_url)
-            return None
-        except Exception as exc:
-            logger.error("SCOUT analysis failed: %s", exc)
-            return None
+        return result
 
     def should_escalate(self, scout_result: dict) -> bool:
-        """True if confidence >= min_confidence AND sentiment is BULLISH or BEARISH."""
+        """True if confidence >= min_confidence and directional sentiment is present."""
         if not scout_result:
             return False
-        confidence = scout_result.get("confidence", 0)
+        confidence = float(scout_result.get("confidence", 0.0) or 0.0)
         sentiment = scout_result.get("sentiment", "NEUTRAL")
         return confidence >= self.min_confidence and sentiment in ("BULLISH", "BEARISH")
-
-    @staticmethod
-    def _parse_json_response(content: str) -> dict | None:
-        """Extract JSON from model output, handling markdown code blocks."""
-        # Strip markdown fences if present
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
-
-        # Find outermost JSON object
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start == -1 or end == 0:
-            logger.error("SCOUT: No JSON object found in response: %s", content[:200])
-            return None
-
-        try:
-            return json.loads(content[start:end])
-        except json.JSONDecodeError as exc:
-            logger.error("SCOUT: JSON parse error: %s | content: %s", exc, content[:200])
-            return None
