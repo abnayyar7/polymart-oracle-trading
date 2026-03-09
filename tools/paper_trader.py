@@ -55,6 +55,7 @@ def _wallet_default() -> dict:
         "peak_balance": starting,
         "max_drawdown": 0.0,
         "open_positions": [],
+        "manual_cleanup_needed": [],
         "trade_log": [],
     }
 
@@ -211,26 +212,39 @@ def place_limit_order(
 
     trade_id = f"paper_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     shares = round(size_usdc / max(0.01, float(limit_price)), 8)
+    strategy_tag = str(market.get("_strategy") or market.get("strategy") or "MODEL").upper()
+
+    market_id_str = str(market.get("condition_id") or market.get("id") or "")
+    slug = str(market.get("slug") or "")
+    event_slug = str(market.get("event_slug") or "")
+    ui_url = f"https://polymarket.com/event/{event_slug}" if event_slug else ""
+    clob_url = f"https://clob.polymarket.com/markets/{market_id_str}"
 
     position = {
         "trade_id": trade_id,
-        "market_id": str(market.get("condition_id") or market.get("id") or ""),
+        "market_id": market_id_str,
         "question": str(market.get("question", "")),
         "side": side,
         "entry_price": round(float(limit_price), 6),
         "size_usdc": size_usdc,
         "shares": shares,
         "edge": round(float(edge), 6),
+        "strategy": strategy_tag,
         "fee_paid": fee,
         "slippage_paid": slip,
         "status": "open",
         "opened_at": _now_iso(),
+        "slug": slug,
+        "event_slug": event_slug,
+        "ui_url": ui_url,
+        "clob_url": clob_url,
     }
 
     active_wallet.setdefault("open_positions", []).append(position)
     active_wallet.setdefault("trade_log", []).append({
         "trade_id": trade_id,
         "event": "OPEN",
+        "strategy": strategy_tag,
         "timestamp": _now_iso(),
         "size_usdc": size_usdc,
         "fee_paid": fee,
@@ -367,9 +381,150 @@ def close_position(trade_id: str, exit_price: float, resolved_yes: bool | None =
     return {"success": True, "trade_id": trade_id, "pnl": pnl, "wallet_balance": wallet["USDC"], "entry_price": entry}
 
 
+def check_and_resolve_positions() -> list[dict]:
+    """Query CLOB for each open position and close any that have a resolved winner.
+
+    Uses ``tokens[].winner`` from the CLOB /markets endpoint.  Only binary
+    YES/NO markets are auto-resolved; non-binary (sports, multi-choice) are
+    skipped with a warning so they don't produce incorrect payouts.
+
+    Returns a list of close_position result dicts for every position settled.
+    For resolved non-binary markets, positions are moved to
+    ``manual_cleanup_needed`` in paper_wallet.json.
+    """
+    import requests
+
+    wallet = load_wallet()
+    open_positions = list(wallet.get("open_positions", []))
+    if not open_positions:
+        return []
+
+    results: list[dict] = []
+
+    for pos in open_positions:
+        trade_id = str(pos.get("trade_id", ""))
+        market_id = str(pos.get("market_id", ""))
+        side = str(pos.get("side", "YES")).upper()
+
+        if not trade_id or not market_id:
+            continue
+
+        try:
+            # Correct CLOB API usage for fetching a specific market by ID
+            url = f"https://clob.polymarket.com/markets/{market_id}"
+            resp = requests.get(url, timeout=8)
+            if not resp.ok:
+                continue
+            m = resp.json()
+            if not isinstance(m, dict) or str(m.get("condition_id", "")) != market_id:
+                # Sanity check: ensure the API returned the correct market
+                continue
+        except Exception as exc:
+            logger.warning("[RESOLVE] CLOB lookup failed for %s: %s", market_id[:20], exc)
+            continue
+
+        tokens = m.get("tokens", [])
+        if not tokens:
+            continue
+
+        # Only auto-resolve if the market is actually closed/resolved on CLOB.
+        # Markets can have winner=True on tokens while still active (data mismatch
+        # between Gamma and CLOB). Guard against false resolution by checking
+        # active/resolved flags before proceeding.
+        market_active = bool(m.get("active", True))
+        market_closed = bool(m.get("closed", False))
+        market_resolved = bool(m.get("resolved", False))
+        if market_active and not market_closed and not market_resolved:
+            # Market is still live — ignore any winner flags (stale/cross-market data)
+            logger.info(
+                "[RESOLVE] SKIP_LIVE %s | active=%s closed=%s resolved=%s",
+                market_id[:20], market_active, market_closed, market_resolved,
+            )
+            continue
+        logger.info(
+            "[RESOLVE] REVIEW %s | active=%s closed=%s resolved=%s",
+            market_id[:20], market_active, market_closed, market_resolved,
+        )
+
+        # Only auto-resolve if at least one token has winner explicitly set.
+        has_winner = any(t.get("winner") is True for t in tokens)
+        if not has_winner:
+            continue
+
+        # Find the YES token for binary markets.
+        yes_token = next((t for t in tokens if str(t.get("outcome", "")).upper() == "YES"), None)
+        no_token  = next((t for t in tokens if str(t.get("outcome", "")).upper() == "NO"),  None)
+
+        if yes_token is None or no_token is None:
+            # Non-binary market (sports / multi-choice): resolved but not auto-settled.
+            # Move it out of open_positions so it does not consume risk capacity.
+            wallet_latest = load_wallet()
+            wallet_positions = list(wallet_latest.get("open_positions", []))
+            idx = next(
+                (i for i, p in enumerate(wallet_positions) if str(p.get("trade_id", "")) == trade_id),
+                -1,
+            )
+            if idx >= 0:
+                moved = wallet_positions.pop(idx)
+                cleanup_item = {
+                    **moved,
+                    "archived_at": _now_iso(),
+                    "cleanup_reason": "resolved_non_binary",
+                    "resolved": True,
+                    "outcomes": [str(t.get("outcome", "")) for t in tokens],
+                    "winner_tokens": [str(t.get("outcome", "")) for t in tokens if t.get("winner") is True],
+                    "clob_url": str(moved.get("clob_url") or f"https://clob.polymarket.com/markets/{market_id}"),
+                }
+
+                manual_list = wallet_latest.setdefault("manual_cleanup_needed", [])
+                if not any(str(item.get("trade_id", "")) == trade_id for item in manual_list):
+                    manual_list.append(cleanup_item)
+
+                wallet_latest["open_positions"] = wallet_positions
+                save_wallet(wallet_latest)
+
+            logger.warning(
+                "[RESOLVE] ARCHIVED non-binary resolved market %s to manual_cleanup_needed — outcomes=%s",
+                market_id[:20],
+                [t.get("outcome") for t in tokens],
+            )
+            continue
+
+        resolved_yes: bool = bool(yes_token.get("winner", False))
+
+        logger.info(
+            "[RESOLVE] %s | side=%s resolved_yes=%s price=%.3f",
+            str(pos.get("question", ""))[:60], side, resolved_yes,
+            float(yes_token.get("price", 0)),
+        )
+
+        exit_price = 1.0 if resolved_yes else 0.0
+        result = close_position(trade_id=trade_id, exit_price=exit_price, resolved_yes=resolved_yes)
+        results.append(result)
+
+        if result.get("success"):
+            logger.info(
+                "[RESOLVE] CLOSED trade_id=%s pnl=%+.4f balance=%.4f",
+                trade_id, float(result.get("pnl", 0)), float(result.get("wallet_balance", 0)),
+            )
+        else:
+            logger.warning("[RESOLVE] close_position failed: %s", result)
+
+    return results
+
+
+def get_manual_cleanup_needed() -> list[dict]:
+    """Return unresolved non-binary positions archived for manual verification."""
+    wallet = load_wallet()
+    items = wallet.get("manual_cleanup_needed", [])
+    return items if isinstance(items, list) else []
+
+
 def reset_daily_stats():
     wallet = load_wallet()
-    current = load_daily_stats()
+    # Read raw file directly — do NOT call load_daily_stats() here, that would
+    # create infinite recursion (load_daily_stats → reset_daily_stats → load_daily_stats).
+    current = _merge(_daily_default(), _read_json(DAILY_STATS_PATH))
     today = _today()
 
     if current.get("date") != today:

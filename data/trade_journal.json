@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "timestamp": "2026-03-08T07:34:39.192576",
+    "trade_id": "paper_20260308_073439_192563",
+    "event": "OPEN",
+    "market_id": "0xed99601f88e998732ca60627631718d7417a27765a4cc50fcff03adaeba1494f",
+    "market_question": "Will Frankenstein win Best Makeup and Hairstyling at the 98t",
+    "side": "YES",
+    "entry_price": 0.893,
+    "exit_price": null,
+    "position_size": 2.0,
+    "edge_at_entry": 0.0891,
+    "pnl": null,
+    "holding_time_seconds": 0.0
+  },
+  {
+    "timestamp": "2026-03-08T07:35:38.636662",
+    "trade_id": "paper_20260308_073538_636649",
+    "event": "OPEN",
+    "market_id": "0x6083fe03ca1d8a2b16f352c8f3460762ea8c58220975bcdb144a5c33e8f77cf9",
+    "market_question": "Will Frankenstein win Best Production Design at the 98th Aca",
+    "side": "YES",
+    "entry_price": 0.895,
+    "exit_price": null,
+    "position_size": 1.9585,
+    "edge_at_entry": 0.0871,
+    "pnl": null,
+    "holding_time_seconds": 0.0
+  },
+  {
+    "timestamp": "2026-03-08T07:38:22.977293",
+    "trade_id": "paper_20260308_073822_977276",
+    "event": "OPEN",
+    "market_id": "0x0a2f5de6fcdacae0f56cb60cd05765e0e9998b605f6cc9c8885ee2a87ad85175",
+    "market_question": "Will Paul Thomas Anderson win Best Director at the 98th Acad",
+    "side": "YES",
+    "entry_price": 0.915,
+    "exit_price": null,
+    "position_size": 1.9179,
+    "edge_at_entry": 0.0667,
+    "pnl": null,
+    "holding_time_seconds": 0.0
+  }
+]

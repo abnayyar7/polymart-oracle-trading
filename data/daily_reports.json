@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "date": "2026-03-09",
+    "start_balance": 93.909112,
+    "end_balance": 93.909112,
+    "daily_pnl": 0.0,
+    "trades_executed": 0,
+    "win_rate": 0.0,
+    "max_drawdown": 0.0
+  }
+]

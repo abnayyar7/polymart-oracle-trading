@@ -70,7 +70,9 @@
     "scan_interval_minutes": 15,
     "arbitrage_check": true,
     "exit_before_resolution": true,
-    "exit_target_multiplier": 2.5
+    "exit_target_multiplier": 2.5,
+    "auto_exit": false,
+    "exit_score_threshold": 70
   },
   "model_weights": {
     "momentum": 0.3,
@@ -290,8 +292,8 @@
     "max_posts_per_feed": 25
   },
   "account": {
-    "starting_balance_usdc": 10.0,
-    "current_balance_usdc": 10.0
+    "starting_balance_usdc": 100.0,
+    "current_balance_usdc": 100.0
   },
   "logging": {
     "level": "INFO",

@@ -1,46 +1,13 @@
 {
   "totals": {
-    "calls": 8,
-    "prompt_tokens": 6980,
-    "output_tokens": 5338,
+    "calls": 0,
+    "prompt_tokens": 0,
+    "output_tokens": 0,
     "cache_tokens": 0,
-    "usd_cost": 0.062105
+    "usd_cost": 0.0
   },
-  "daily": {
-    "2026-03-05": {
-      "calls": 8,
-      "prompt_tokens": 6980,
-      "output_tokens": 5338,
-      "cache_tokens": 0,
-      "usd_cost": 0.062105
-    }
-  },
-  "monthly": {
-    "2026-03": {
-      "calls": 8,
-      "prompt_tokens": 6980,
-      "output_tokens": 5338,
-      "cache_tokens": 0,
-      "usd_cost": 0.062105
-    }
-  },
-  "last_call": {
-    "timestamp": "2026-03-05T21:08:41.157595+00:00",
-    "model": "gemini-2.5-pro",
-    "prompt_tokens": 983,
-    "output_tokens": 356,
-    "cache_tokens": 0,
-    "total_tokens": 3112,
-    "usd_cost": 0.004789,
-    "prompt_cost_usd": 0.001229,
-    "output_cost_usd": 0.00356,
-    "cache_cost_usd": 0.0,
-    "pricing": {
-      "tier": "<=200k",
-      "input_per_m": 1.25,
-      "output_per_m": 10.0,
-      "cache_per_m": 0.125
-    }
-  },
-  "updated_at": "2026-03-05T21:08:41.157595+00:00"
+  "daily": {},
+  "monthly": {},
+  "last_call": null,
+  "updated_at": null
 }

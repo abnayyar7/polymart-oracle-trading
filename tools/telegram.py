@@ -515,14 +515,11 @@ def _parse_command(text: str) -> tuple[str, str]:
 def command_help_text() -> str:
     return (
         "<b>ORACLE Commands</b>\n"
+        "/start — show this help\n"
         "/status — runtime state\n"
         "/balance — paper/live balances\n"
-        "/openbets — list open positions\n"
-        "/bets — last 10 bets (current mode)\n"
-        "/pnl — P&amp;L summary with win rate\n"
+        "/cleanup — list non-binary markets needing manual cleanup\n"
         "/costs — Gemini API costs\n"
-        "/pause — pause scheduled scans\n"
-        "/resume — resume scheduled scans\n"
         "/help — show this help"
     )
 

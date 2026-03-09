@@ -258,11 +258,286 @@ def load_config() -> dict:
         return json.load(f)
 
 
+def fetch_convergence_markets(
+    min_price: float = 0.82,
+    max_price: float = 0.96,
+    max_hours: float = 48.0,
+    min_liquidity: float = 500.0,
+    limit: int = 100,
+) -> list:
+    """Fetch markets specifically suited for late-resolution convergence."""
+    from datetime import datetime, timezone
+    from dateutil.parser import parse as parse_dt
+
+    import requests
+
+    try:
+        url = "https://clob.polymarket.com/markets"
+        now = datetime.now(timezone.utc)
+        candidates = []
+
+        def _extract_price(row: dict) -> float:
+            tokens = row.get("tokens", [])
+            yes_token = next((t for t in tokens if str(t.get("outcome", "")).upper() == "YES"), None)
+            if yes_token and yes_token.get("price") not in (None, ""):
+                return float(yes_token.get("price") or 0)
+            if row.get("yes_price") not in (None, ""):
+                return float(row.get("yes_price") or 0)
+
+            outcomes = row.get("outcomes")
+            if isinstance(outcomes, str):
+                try:
+                    outcomes = json.loads(outcomes)
+                except Exception:
+                    outcomes = None
+
+            op = row.get("outcomePrices")
+            if isinstance(op, str):
+                try:
+                    op = json.loads(op)
+                except Exception:
+                    op = None
+
+            if isinstance(op, list) and op:
+                yes_idx = 0
+                if isinstance(outcomes, list) and outcomes:
+                    for i, outcome in enumerate(outcomes):
+                        if str(outcome).upper() == "YES":
+                            yes_idx = i
+                            break
+                if yes_idx < len(op) and op[yes_idx] not in (None, ""):
+                    return float(op[yes_idx] or 0)
+
+            return 0.0
+
+        def _extract_liquidity(row: dict) -> float:
+            return float(
+                row.get("volume")
+                or row.get("volumeNum")
+                or row.get("liquidity")
+                or row.get("liquidityNum")
+                or 0
+            )
+
+        def _append_if_match(row: dict) -> None:
+            price = _extract_price(row)
+            if price <= 0:
+                return
+
+            end_date_str = row.get("end_date_iso") or row.get("endDateIso") or row.get("end_date") or row.get("endDate")
+            if not end_date_str:
+                return
+
+            end_dt = parse_dt(str(end_date_str))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            hours_left = (end_dt - now).total_seconds() / 3600.0
+
+            if not (float(min_price) <= price <= float(max_price)):
+                return
+            if hours_left < 0 or hours_left > float(max_hours):
+                return
+
+            liquidity = _extract_liquidity(row)
+            if liquidity < float(min_liquidity):
+                return
+
+            market_id = (
+                row.get("condition_id")
+                or row.get("conditionId")
+                or row.get("market_id")
+                or row.get("id")
+                or ""
+            )
+
+            slug = str(row.get("market_slug") or row.get("slug") or "")
+            event_slug = str(row.get("event_slug") or "")
+            candidates.append(
+                {
+                    "market_id": str(market_id),
+                    "condition_id": str(market_id),
+                    "id": str(market_id),
+                    "question": str(row.get("question", ""))[:80],
+                    "price": price,
+                    "hours_left": round(hours_left, 1),
+                    "liquidity": liquidity,
+                    "end_date_iso": str(end_date_str),
+                    "slug": slug,
+                    "event_slug": event_slug,
+                }
+            )
+
+        # Primary source: Gamma API — returns current active markets with future end
+        # dates. CLOB sorted ascending by end_date_iso returns 2023/2024 historical
+        # markets first (10,000+ records before reaching any current ones), so Gamma
+        # is strictly better as the primary feed for convergence scanning.
+        gamma_offset = 0
+        gamma_batch = 500
+        gamma_pages = 0
+        total_polled = 0
+
+        while len(candidates) < int(limit) and gamma_pages < 4:
+            gamma_pages += 1
+            gamma_resp = requests.get(
+                "https://gamma-api.polymarket.com/markets",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "limit": gamma_batch,
+                    "offset": gamma_offset,
+                },
+                timeout=10,
+            )
+            gamma_resp.raise_for_status()
+            gamma_markets = gamma_resp.json()
+            if not isinstance(gamma_markets, list) or not gamma_markets:
+                break
+            total_polled += len(gamma_markets)
+            for m in gamma_markets:
+                try:
+                    _append_if_match(m)
+                except Exception:
+                    continue
+                if len(candidates) >= int(limit):
+                    break
+            if len(gamma_markets) < gamma_batch:
+                break
+            gamma_offset += gamma_batch
+
+        logger.info(
+            "[CONVERGENCE] Gamma polled=%d pages=%d filtered=%d (price=%.2f-%.2f hours<=%.0fh liq>=$%.0f)",
+            total_polled, gamma_pages, len(candidates),
+            float(min_price), float(max_price), float(max_hours), float(min_liquidity),
+        )
+
+        # Fallback source: CLOB /markets if Gamma yields no convergence rows.
+        # Use descending order so the most recently created/expiring markets come
+        # first, avoiding the thousands of 2023-era historical markets at the front
+        # of ascending order. Drop the accepting_orders filter — near-expiry markets
+        # often have it set to False even when orderable via the CLOB.
+        if not candidates:
+            next_cursor = ""
+            pages = 0
+            clob_polled = 0
+            while len(candidates) < int(limit) and pages < 5:
+                pages += 1
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "limit": 1000,
+                    "order": "end_date_iso",
+                    "ascending": "true",
+                }
+                if next_cursor:
+                    params["next_cursor"] = next_cursor
+
+                resp = requests.get(url, params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                clob_markets = data.get("data", data) if isinstance(data, dict) else data
+                if not isinstance(clob_markets, list) or not clob_markets:
+                    break
+
+                clob_polled += len(clob_markets)
+                for m in clob_markets:
+                    if not bool(m.get("active", False)):
+                        continue
+                    if bool(m.get("closed", False)):
+                        continue
+                    try:
+                        _append_if_match(m)
+                    except Exception:
+                        continue
+                    if len(candidates) >= int(limit):
+                        break
+
+                next_cursor = ""
+                if isinstance(data, dict):
+                    next_cursor = str(data.get("next_cursor") or "")
+                if not next_cursor:
+                    break
+
+            logger.info(
+                "[CONVERGENCE] CLOB fallback polled=%d pages=%d filtered=%d",
+                clob_polled, pages, len(candidates),
+            )
+
+        return sorted(candidates, key=lambda x: x["hours_left"])[: int(limit)]
+
+    except Exception as e:
+        logger.warning("fetch_convergence_markets failed: %s", e)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Market fetching
 # ---------------------------------------------------------------------------
 
-def fetch_markets(config: dict, limit: int = 50) -> list[dict]:
+def fetch_market_by_id(market_id: str) -> dict | None:
+    """
+    Fetch a single market's current state from Gamma API.
+    Returns a normalized market dict or None if not found/error.
+    """
+    if not market_id:
+        return None
+
+    try:
+        url = f"https://gamma-api.polymarket.com/markets/{market_id}"
+        data = _http_get_json_with_retry(url, timeout=10, source=f"gamma_single:{market_id}")
+        if not data or not isinstance(data, dict):
+            return None
+
+        # Reuse existing parsing logic
+        yes_price = _parse_yes_price(data)
+        if yes_price is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        end_date = data.get("end_date_iso") or data.get("endDate") or data.get("end_date")
+        days_remaining = 0.0
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                days_remaining = (end_dt - now).total_seconds() / 86400.0
+            except Exception:
+                pass
+
+        best_ask = _to_float(data.get("best_ask") or data.get("bestAsk") or 0)
+        best_bid = _to_float(data.get("best_bid") or data.get("bestBid") or 0)
+        spread = 0.0
+        if best_ask > 0 and best_bid > 0:
+            spread = (best_ask - best_bid) / best_ask
+
+        volume = _to_float(data.get("volume") or data.get("volumeNum") or 0)
+        liquidity = _to_float(data.get("liquidity") or data.get("liquidityNum") or volume)
+
+        return {
+            "id": market_id,
+            "condition_id": market_id,
+            "question": str(data.get("question", "")),
+            "outcomes": _extract_outcomes(data),
+            "yes_price": round(yes_price, 4),
+            "no_price": round(1 - yes_price, 4),
+            "spread": round(spread, 4),
+            "volume": round(volume, 2),
+            "liquidity": round(liquidity, 2),
+            "days_remaining": round(days_remaining, 2),
+            "days_to_resolution": round(days_remaining, 2),
+            "end_date_iso": str(end_date),
+            "accepting_orders": bool(data.get("accepting_orders", False)),
+            "active": bool(data.get("active", True)),
+            "closed": bool(data.get("closed", False)),
+            "raw": data,
+        }
+    except Exception as exc:
+        logger.warning("fetch_market_by_id failed for %s: %s", market_id, exc)
+        return None
+
+
+def fetch_markets(config: dict, limit: int = 100) -> list[dict]:
+
     """
     Fetch markets from multiple Polymarket/Gamma endpoints.
     Returns a deduplicated list of viable markets sorted by volume.
